@@ -102,10 +102,11 @@ class ItemRepository(private val context: Context) {
      */
     suspend fun loadChecklists(treeUri: Uri): List<Checklist> =
         withContext(Dispatchers.IO) {
-            val root = rootDocId(treeUri)
             val result = ArrayList<Checklist>()
-            val topLevel = childrenOf(treeUri, root)
-                .filter { isDir(it.mimeType) && it.displayName != LOGS_DIR }
+            // Checklists live under the workspace's `checklists/` folder.
+            val checklistsId = findChecklistsDir(treeUri) ?: return@withContext result
+            val topLevel = childrenOf(treeUri, checklistsId)
+                .filter { isDir(it.mimeType) }
                 .sortedBy { it.displayName }
             for (folder in topLevel) {
                 try {
@@ -187,6 +188,31 @@ class ItemRepository(private val context: Context) {
             val parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, root)
             val created = DocumentsContract.createDocument(
                 resolver, parentUri, DocumentsContract.Document.MIME_TYPE_DIR, LOGS_DIR
+            )
+            created?.let { DocumentsContract.getDocumentId(it) }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    // --- checklists folder management ------------------------------------- //
+
+    /** Find the workspace `checklists` folder; null if it doesn't exist yet. */
+    private fun findChecklistsDir(treeUri: Uri): String? {
+        val root = rootDocId(treeUri)
+        return childrenOf(treeUri, root).firstOrNull {
+            isDir(it.mimeType) && it.displayName == CHECKLISTS_DIR
+        }?.docId
+    }
+
+    /** Ensure the workspace `checklists` folder exists; return its document id. */
+    private fun ensureChecklistsDir(treeUri: Uri): String? {
+        findChecklistsDir(treeUri)?.let { return it }
+        val root = rootDocId(treeUri)
+        return try {
+            val parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, root)
+            val created = DocumentsContract.createDocument(
+                resolver, parentUri, DocumentsContract.Document.MIME_TYPE_DIR, CHECKLISTS_DIR
             )
             created?.let { DocumentsContract.getDocumentId(it) }
         } catch (_: Exception) {
@@ -551,8 +577,9 @@ class ItemRepository(private val context: Context) {
             return@withContext WriteResult(false, "A checklist named \u201C$trimmedTitle\u201D already exists.")
         }
         val folderName = Naming.checklistFolderName(trimmedId, trimmedTitle)
-        val root = rootDocId(treeUri)
-        val folderId = createFolder(treeUri, root, folderName)
+        val checklistsDir = ensureChecklistsDir(treeUri)
+            ?: return@withContext WriteResult(false, "Could not create the checklists folder.")
+        val folderId = createFolder(treeUri, checklistsDir, folderName)
             ?: return@withContext WriteResult(false, "Could not create the checklist folder.")
         val content = Markdown.build(mapOf("id" to trimmedId), trimmedTitle, description.trim(), "# ")
         if (!writeReadme(treeUri, folderId, content)) {
@@ -835,6 +862,7 @@ class ItemRepository(private val context: Context) {
     companion object {
         private const val README = "README.md"
         private const val LOGS_DIR = "logs"
+        private const val CHECKLISTS_DIR = "checklists"
         private const val STATE_FILE = "state.csv"
         private const val CLIENT = "android-app"
 

@@ -50,14 +50,19 @@ checklists, headings, and items. Completion state and an audit trail live in a
 
 ## Data format it reads (from Checklist Studio)
 
-The workspace holds one folder per checklist, `<ID>-<slug>`. Each has a
-`README.md` with optional `---`-fenced frontmatter carrying `id`, a `#` title
-line, and a body used as the description. Inside are node subfolders `NN-<slug>`,
-each with a `README.md` whose frontmatter `kind` is `heading` or `item`, a `##`
-title line, and a body description. Nodes are ordered by their two-digit
-sequence prefix, then by folder name for off-app folders. Any folder containing
-a `README.md` is treated as a checklist/node, matching Studio's tolerant loader.
-The app only **reads** these files; it never rewrites them.
+The workspace root contains two folders: `checklists/` (the checklist data) and
+`logs/` (this app's bookkeeping, described below). Inside `checklists/` there is
+one folder per checklist, `<ID>-<slug>`. Each has a `README.md` with optional
+`---`-fenced frontmatter carrying `id`, a `#` title line, and a body used as the
+description. Inside are node subfolders `NN-<slug>`, each with a `README.md`
+whose frontmatter `kind` is `heading` or `item`, a `##` title line, and a body
+description. Nodes are ordered by their two-digit sequence prefix, then by folder
+name for off-app folders. Any folder under `checklists/` containing a `README.md`
+is treated as a checklist, matching Studio's tolerant loader.
+
+The app reads these files, and (via the create/edit/reorder actions) writes them
+using the same on-disk format. New checklist folders are created inside
+`checklists/`.
 
 ## Completion tracking and the log (in `logs/`)
 
