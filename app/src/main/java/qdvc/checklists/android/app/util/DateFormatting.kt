@@ -34,4 +34,11 @@ object DateFormatting {
             iso
         }
     }
+
+    /** Format an epoch-millis instant (0 = never) for the index-status page. */
+    fun humanTimestampMillis(millis: Long): String {
+        if (millis <= 0L) return "Never"
+        val out = SimpleDateFormat("d MMM yyyy 'at' HH:mm", Locale.getDefault())
+        return out.format(java.util.Date(millis))
+    }
 }

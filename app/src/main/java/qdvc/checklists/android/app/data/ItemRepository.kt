@@ -29,10 +29,11 @@ import java.util.TimeZone
  *
  * This repository also owns the app's completion bookkeeping, which lives in a
  * `logs` folder at the workspace root:
- *   - `logs/state.csv`   — current done-state per (checklist, item).
- *   - `logs/log-YYYY-MM-DD.csv` — one file per day of mark/unmark actions.
- * The studio's own checklist/node files are only ever *read*, never modified,
- * so the two apps never fight over the same files.
+ *   - `logs/log-YYYY-MM-DD.csv` — one file per day of actions. These daily logs
+ *     are the single source of truth; current done-state is reconstructed by
+ *     replaying them (there is no state.csv).
+ * Checklist/node files under `checklists/` are read, and written via the
+ * create/edit/reorder actions using the studio's on-disk format.
  */
 class ItemRepository(private val context: Context) {
 
@@ -253,101 +254,70 @@ class ItemRepository(private val context: Context) {
         false
     }
 
-    // --- done-state (logs/state.csv) -------------------------------------- //
+    // --- done-state (reconstructed from the daily logs) ------------------- //
 
     // Identity in the log files is workspace-*relative*: the checklist's folder
     // name and the item's folder name. SAF document ids are never written,
     // because they embed the workspace's absolute location and name.
+    //
+    // There is no state.csv. The daily logs are the single source of truth: the
+    // current done-state of every item is reconstructed by replaying them in
+    // timestamp order. (A Room index caches this — see IndexRepository — with
+    // this live replay as the fallback.)
 
     /** Key uniquely identifying an item across the workspace (folder-relative). */
     private fun stateKey(checklistFolder: String, itemFolder: String) =
         "$checklistFolder\u0000$itemFolder"
 
     /**
-     * Read the current done-state map for a workspace, keyed by
-     * "$checklistFolder\u0000$itemFolder". Missing file => empty map.
+     * Reconstruct the current done-state map for a workspace by replaying every
+     * daily log in timestamp order, keyed by "$checklistFolder\u0000$itemFolder".
      */
     suspend fun loadDoneStates(treeUri: Uri): Map<String, DoneState> =
-        withContext(Dispatchers.IO) {
-            val logsId = ensureLogsDir(treeUri) ?: return@withContext emptyMap()
-            val fileUri = childrenOf(treeUri, logsId).firstOrNull {
-                !isDir(it.mimeType) && it.displayName == STATE_FILE
-            }?.let { DocumentsContract.buildDocumentUriUsingTree(treeUri, it.docId) }
-                ?: return@withContext emptyMap()
+        withContext(Dispatchers.IO) { replayDoneStates(treeUri) }
 
-            val lines = readAllLines(fileUri)
-            val map = HashMap<String, DoneState>()
-            for ((i, line) in lines.withIndex()) {
-                if (i == 0) continue // header
-                if (line.isBlank()) continue
-                val f = Csv.parseRow(line)
-                if (f.size < 5) continue
-                val checklistFolder = f[0]
-                val itemFolder = f[1]
-                val done = f[3].trim().equals("true", ignoreCase = true)
-                val markedAt = f[4].takeIf { it.isNotBlank() }
-                map[stateKey(checklistFolder, itemFolder)] = DoneState(done, markedAt)
-            }
-            map
+    /** All daily log files (log-*.csv) in the logs dir. */
+    private fun dailyLogFiles(treeUri: Uri): List<ChildInfo> {
+        val logsId = ensureLogsDir(treeUri) ?: return emptyList()
+        return childrenOf(treeUri, logsId).filter {
+            !isDir(it.mimeType) &&
+                it.displayName.startsWith("log-") &&
+                it.displayName.endsWith(".csv")
         }
-
-    private fun writeDoneStates(treeUri: Uri, states: Map<String, StateRow>): Boolean {
-        val logsId = ensureLogsDir(treeUri) ?: return false
-        val fileUri = ensureLogFile(treeUri, logsId, STATE_FILE) ?: return false
-        val sb = StringBuilder()
-        sb.append(
-            Csv.encodeRow(
-                listOf(
-                    "checklist_folder", "item_folder", "item_title",
-                    "done", "marked_at", "client"
-                )
-            )
-        ).append('\n')
-        for (row in states.values) {
-            sb.append(
-                Csv.encodeRow(
-                    listOf(
-                        row.checklistFolder,
-                        row.itemFolder,
-                        row.itemTitle,
-                        row.done.toString(),
-                        row.markedAt ?: "",
-                        CLIENT,
-                    )
-                )
-            ).append('\n')
-        }
-        return writeAll(fileUri, sb.toString())
     }
 
-    private data class StateRow(
-        val checklistFolder: String,
-        val itemFolder: String,
-        val itemTitle: String,
-        val done: Boolean,
-        val markedAt: String?,
-    )
-
-    private fun currentStateRows(treeUri: Uri): MutableMap<String, StateRow> {
-        val logsId = ensureLogsDir(treeUri) ?: return LinkedHashMap()
-        val fileUri = childrenOf(treeUri, logsId).firstOrNull {
-            !isDir(it.mimeType) && it.displayName == STATE_FILE
-        }?.let { DocumentsContract.buildDocumentUriUsingTree(treeUri, it.docId) }
-            ?: return LinkedHashMap()
-        val lines = readAllLines(fileUri)
-        val map = LinkedHashMap<String, StateRow>()
-        for ((i, line) in lines.withIndex()) {
-            if (i == 0 || line.isBlank()) continue
-            val f = Csv.parseRow(line)
-            if (f.size < 5) continue
-            val row = StateRow(
-                checklistFolder = f[0],
-                itemFolder = f[1],
-                itemTitle = f[2],
-                done = f[3].trim().equals("true", ignoreCase = true),
-                markedAt = f[4].takeIf { it.isNotBlank() },
-            )
-            map[stateKey(row.checklistFolder, row.itemFolder)] = row
+    /**
+     * Replay all daily logs to derive current done-state. Each row is
+     * `timestamp, action, client, checklist_folder, item_folder`. Only the
+     * mark/unmark actions affect done-state; structural rows are ignored.
+     */
+    fun replayDoneStates(treeUri: Uri): Map<String, DoneState> {
+        // Sort files by name (log-YYYY-MM-DD.csv sorts chronologically), then
+        // rows by timestamp, so the last write wins.
+        data class Event(val ts: String, val action: String, val key: String)
+        val events = ArrayList<Event>()
+        for (f in dailyLogFiles(treeUri).sortedBy { it.displayName }) {
+            val fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, f.docId)
+            for ((i, line) in readAllLines(fileUri).withIndex()) {
+                if (i == 0 || line.isBlank()) continue
+                val c = Csv.parseRow(line)
+                if (c.size < 5) continue
+                val action = c[1]
+                val checklistFolder = c[3]
+                val itemFolder = c[4]
+                if (itemFolder.isEmpty()) continue // structural row, not an item mark
+                events.add(Event(c[0], action, stateKey(checklistFolder, itemFolder)))
+            }
+        }
+        events.sortBy { it.ts }
+        val map = HashMap<String, DoneState>()
+        for (e in events) {
+            when (e.action) {
+                ActionType.MARKED_DONE.label -> map[e.key] = DoneState(true, e.ts)
+                ActionType.MARKED_NOT_DONE.label,
+                ActionType.MARKED_NOT_DONE_BULK.label -> map[e.key] = DoneState(false, null)
+                // Other (structural) actions don't change done-state.
+            }
         }
         return map
     }
@@ -367,8 +337,7 @@ class ItemRepository(private val context: Context) {
                 existing.add(
                     Csv.encodeRow(
                         listOf(
-                            "timestamp", "action", "checklist_id", "checklist_title",
-                            "item_title", "checklist_folder", "item_folder", "client"
+                            "timestamp", "action", "client", "checklist_folder", "item_folder"
                         )
                     )
                 )
@@ -376,10 +345,7 @@ class ItemRepository(private val context: Context) {
             for (e in dayEntries) {
                 existing.add(
                     Csv.encodeRow(
-                        listOf(
-                            e.timestamp, e.action.label, e.checklistId, e.checklistTitle,
-                            e.itemTitle, e.checklistFolder, e.itemFolder, CLIENT
-                        )
+                        listOf(e.timestamp, e.action.label, CLIENT, e.checklistFolder, e.itemFolder)
                     )
                 )
             }
@@ -391,9 +357,6 @@ class ItemRepository(private val context: Context) {
         val timestamp: String,
         val dateStamp: String,
         val action: ActionType,
-        val checklistId: String,
-        val checklistTitle: String,
-        val itemTitle: String,
         val checklistFolder: String,
         val itemFolder: String,
     )
@@ -403,28 +366,23 @@ class ItemRepository(private val context: Context) {
     /**
      * Read all logged actions for a single item across every daily log file,
      * most-recent first. Items are identified by their workspace-relative folder
-     * names. Used by the item detail view.
+     * names. Used by the item detail view. Row layout:
+     * `timestamp, action, client, checklist_folder, item_folder`.
      */
     suspend fun loadItemLog(
         treeUri: Uri,
         checklistFolder: String,
         itemFolder: String,
     ): List<LogRow> = withContext(Dispatchers.IO) {
-        val logsId = ensureLogsDir(treeUri) ?: return@withContext emptyList()
-        val files = childrenOf(treeUri, logsId).filter {
-            !isDir(it.mimeType) &&
-                it.displayName.startsWith("log-") &&
-                it.displayName.endsWith(".csv")
-        }
         val rows = ArrayList<LogRow>()
-        for (f in files) {
+        for (f in dailyLogFiles(treeUri)) {
             val fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, f.docId)
             val lines = readAllLines(fileUri)
             for ((i, line) in lines.withIndex()) {
                 if (i == 0 || line.isBlank()) continue
                 val c = Csv.parseRow(line)
-                if (c.size < 7) continue
-                if (c[5] == checklistFolder && c[6] == itemFolder) {
+                if (c.size < 5) continue
+                if (c[3] == checklistFolder && c[4] == itemFolder) {
                     rows.add(LogRow(timestamp = c[0], action = c[1]))
                 }
             }
@@ -435,8 +393,8 @@ class ItemRepository(private val context: Context) {
     // --- public mutations -------------------------------------------------- //
 
     /**
-     * Mark one item done or not-done. Updates `logs/state.csv` and appends a row
-     * to today's action log. Returns the resulting [DoneState].
+     * Mark one item done or not-done by appending a row to today's action log
+     * (the log is the source of truth). Returns the resulting [DoneState].
      */
     suspend fun setItemDone(
         treeUri: Uri,
@@ -447,11 +405,7 @@ class ItemRepository(private val context: Context) {
         val now = Date()
         val ts = ISO.format(now)
         val day = DAY.format(now)
-        val states = currentStateRows(treeUri)
-        val key = stateKey(checklist.folderName, item.folderName)
         val markedAt = if (done) ts else null
-        states[key] = StateRow(checklist.folderName, item.folderName, item.title, done, markedAt)
-        writeDoneStates(treeUri, states)
         appendActionLog(
             treeUri,
             listOf(
@@ -459,9 +413,6 @@ class ItemRepository(private val context: Context) {
                     timestamp = ts,
                     dateStamp = day,
                     action = if (done) ActionType.MARKED_DONE else ActionType.MARKED_NOT_DONE,
-                    checklistId = checklist.cid,
-                    checklistTitle = checklist.title,
-                    itemTitle = item.title,
                     checklistFolder = checklist.folderName,
                     itemFolder = item.folderName,
                 )
@@ -482,29 +433,23 @@ class ItemRepository(private val context: Context) {
         val now = Date()
         val ts = ISO.format(now)
         val day = DAY.format(now)
-        val states = currentStateRows(treeUri)
+        val current = replayDoneStates(treeUri)
         val items = checklist.nodes.filter { it.kind == NodeKind.ITEM }
         val changed = LinkedHashSet<String>()
         val logs = ArrayList<LogEntry>()
         for (item in items) {
             val key = stateKey(checklist.folderName, item.folderName)
-            val wasDone = states[key]?.done == true
-            states[key] = StateRow(checklist.folderName, item.folderName, item.title, false, null)
-            if (wasDone) changed.add(item.folderName)
+            if (current[key]?.done == true) changed.add(item.folderName)
             logs.add(
                 LogEntry(
                     timestamp = ts,
                     dateStamp = day,
                     action = ActionType.MARKED_NOT_DONE_BULK,
-                    checklistId = checklist.cid,
-                    checklistTitle = checklist.title,
-                    itemTitle = item.title,
                     checklistFolder = checklist.folderName,
                     itemFolder = item.folderName,
                 )
             )
         }
-        writeDoneStates(treeUri, states)
         appendActionLog(treeUri, logs)
         changed
     }
@@ -585,11 +530,7 @@ class ItemRepository(private val context: Context) {
         if (!writeReadme(treeUri, folderId, content)) {
             return@withContext WriteResult(false, "Could not write the checklist file.")
         }
-        logStructural(
-            treeUri, ActionType.CREATED_CHECKLIST,
-            checklistId = trimmedId, checklistTitle = trimmedTitle,
-            itemTitle = "", checklistFolder = folderName, itemFolder = "",
-        )
+        logStructural(treeUri, ActionType.CREATED_CHECKLIST, checklistFolder = folderName, itemFolder = "")
         WriteResult(true)
     }
 
@@ -619,8 +560,7 @@ class ItemRepository(private val context: Context) {
         val action = if (kind == NodeKind.HEADING) ActionType.CREATED_HEADING else ActionType.CREATED_ITEM
         logStructural(
             treeUri, action,
-            checklistId = checklist.cid, checklistTitle = checklist.title,
-            itemTitle = trimmedTitle, checklistFolder = checklist.folderName, itemFolder = folderName,
+            checklistFolder = checklist.folderName, itemFolder = folderName,
         )
         WriteResult(true)
     }
@@ -667,8 +607,7 @@ class ItemRepository(private val context: Context) {
         logStructural(
             treeUri,
             if (renamed) ActionType.RENAMED_CHECKLIST else ActionType.EDITED_CHECKLIST,
-            checklistId = id, checklistTitle = title,
-            itemTitle = "", checklistFolder = newFolderName, itemFolder = "",
+            checklistFolder = newFolderName, itemFolder = "",
         )
         WriteResult(true)
     }
@@ -712,8 +651,7 @@ class ItemRepository(private val context: Context) {
         logStructural(
             treeUri,
             if (renamed) ActionType.RENAMED_ITEM else ActionType.EDITED_ITEM,
-            checklistId = checklist.cid, checklistTitle = checklist.title,
-            itemTitle = title, checklistFolder = checklist.folderName, itemFolder = newFolderName,
+            checklistFolder = checklist.folderName, itemFolder = newFolderName,
         )
         WriteResult(true)
     }
@@ -754,53 +692,38 @@ class ItemRepository(private val context: Context) {
         for ((old, new) in renameMap) {
             rewriteLogsForNodeRename(treeUri, checklist.folderName, old, new)
         }
-        logStructural(
-            treeUri, ActionType.REORDERED_NODES,
-            checklistId = checklist.cid, checklistTitle = checklist.title,
-            itemTitle = "", checklistFolder = checklist.folderName, itemFolder = "",
-        )
+        logStructural(treeUri, ActionType.REORDERED_NODES, checklistFolder = checklist.folderName, itemFolder = "")
         WriteResult(true)
     }
 
     // --- log rewriting on rename ------------------------------------------ //
 
-    private fun logCsvFiles(treeUri: Uri, logsId: String): List<ChildInfo> =
-        childrenOf(treeUri, logsId).filter {
-            !isDir(it.mimeType) &&
-                (it.displayName == STATE_FILE ||
-                    (it.displayName.startsWith("log-") && it.displayName.endsWith(".csv")))
-        }
+    // Daily log row layout: timestamp, action, client, checklist_folder(3),
+    // item_folder(4). Renames rewrite these folder columns so history follows.
 
-    /** Rewrite checklist_folder in every logs CSV (columns 0 of state, 5 of log). */
+    /** Rewrite checklist_folder (col 3) in every daily log CSV. */
     private fun rewriteLogsForChecklistRename(treeUri: Uri, oldFolder: String, newFolder: String) {
-        val logsId = ensureLogsDir(treeUri) ?: return
-        for (f in logCsvFiles(treeUri, logsId)) {
+        for (f in dailyLogFiles(treeUri)) {
             val uri = DocumentsContract.buildDocumentUriUsingTree(treeUri, f.docId)
-            val isState = f.displayName == STATE_FILE
-            val col = if (isState) 0 else 5
-            rewriteCsvColumn(uri, col) { value, _ -> if (value == oldFolder) newFolder else value }
+            rewriteCsvColumn(uri, 3) { value, _ -> if (value == oldFolder) newFolder else value }
         }
     }
 
-    /** Rewrite item_folder rows for a given checklist across all logs CSVs. */
+    /** Rewrite item_folder (col 4) rows for a given checklist across daily logs. */
     private fun rewriteLogsForNodeRename(
         treeUri: Uri,
         checklistFolder: String,
         oldNodeFolder: String,
         newNodeFolder: String,
     ) {
-        val logsId = ensureLogsDir(treeUri) ?: return
-        for (f in logCsvFiles(treeUri, logsId)) {
+        for (f in dailyLogFiles(treeUri)) {
             val uri = DocumentsContract.buildDocumentUriUsingTree(treeUri, f.docId)
-            val isState = f.displayName == STATE_FILE
-            val checklistCol = if (isState) 0 else 5
-            val itemCol = if (isState) 1 else 6
             rewriteCsvRows(uri) { fields ->
-                if (fields.size > itemCol &&
-                    fields[checklistCol] == checklistFolder &&
-                    fields[itemCol] == oldNodeFolder
+                if (fields.size > 4 &&
+                    fields[3] == checklistFolder &&
+                    fields[4] == oldNodeFolder
                 ) {
-                    fields.toMutableList().also { it[itemCol] = newNodeFolder }
+                    fields.toMutableList().also { it[4] = newNodeFolder }
                 } else {
                     fields
                 }
@@ -835,9 +758,6 @@ class ItemRepository(private val context: Context) {
     private fun logStructural(
         treeUri: Uri,
         action: ActionType,
-        checklistId: String,
-        checklistTitle: String,
-        itemTitle: String,
         checklistFolder: String,
         itemFolder: String,
     ) {
@@ -849,9 +769,6 @@ class ItemRepository(private val context: Context) {
                     timestamp = ISO.format(now),
                     dateStamp = DAY.format(now),
                     action = action,
-                    checklistId = checklistId,
-                    checklistTitle = checklistTitle,
-                    itemTitle = itemTitle,
                     checklistFolder = checklistFolder,
                     itemFolder = itemFolder,
                 )
@@ -863,7 +780,6 @@ class ItemRepository(private val context: Context) {
         private const val README = "README.md"
         private const val LOGS_DIR = "logs"
         private const val CHECKLISTS_DIR = "checklists"
-        private const val STATE_FILE = "state.csv"
         private const val CLIENT = "android-app"
 
         private val ISO = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US)

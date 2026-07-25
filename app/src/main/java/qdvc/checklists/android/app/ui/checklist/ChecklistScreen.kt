@@ -113,14 +113,14 @@ fun ChecklistScreen(
                             leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
                         )
                         DropdownMenuItem(
-                            text = { Text("New item or heading") },
-                            onClick = { menuOpen = false; showCreate = true },
-                            leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                        )
-                        DropdownMenuItem(
                             text = { Text("Rearrange items") },
                             onClick = { menuOpen = false; showReorder = true },
                             leadingIcon = { Icon(Icons.Filled.SwapVert, contentDescription = null) },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("New item or heading") },
+                            onClick = { menuOpen = false; showCreate = true },
+                            leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
                         )
                     }
                 },

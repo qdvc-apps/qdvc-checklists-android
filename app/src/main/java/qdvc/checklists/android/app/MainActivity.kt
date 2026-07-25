@@ -92,6 +92,7 @@ private fun AppScaffold(vm: AppViewModel) {
     val selectedItem by vm.selectedItem.collectAsStateWithLifecycle()
     val allChecklists by vm.allChecklists.collectAsStateWithLifecycle()
     val searchResults by vm.searchResults.collectAsStateWithLifecycle()
+    val indexStatus by vm.indexStatus.collectAsStateWithLifecycle()
 
     val themeMode by vm.themeMode.collectAsStateWithLifecycle()
     val lightId by vm.lightThemeId.collectAsStateWithLifecycle()
@@ -184,6 +185,11 @@ private fun AppScaffold(vm: AppViewModel) {
                         },
                         onSearch = vm::runSearch,
                         onSetSearching = vm::setSearching,
+                        onShowIndexStatus = {
+                            vm.showChecklistsSurface(ChecklistsSurface.INDEX_STATUS)
+                        },
+                        onRegenerateIndex = vm::regenerateIndex,
+                        indexStatus = indexStatus,
                         onCreateChecklist = vm::createChecklist,
                         onOpenSettings = { showSettings = true },
                     )

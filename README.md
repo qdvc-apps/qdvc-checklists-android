@@ -37,7 +37,8 @@ checklists, headings, and items. Completion state and an audit trail live in a
 ## The four tabs
 
 1. **Home** — workspaces, then straight into that workspace's checklists. The
-   toolbar menu holds Search and New checklist.
+   workspaces toolbar menu holds Settings; the checklists toolbar menu holds
+   Search, Index status, and New checklist.
 2. **Checklist** — toolbar title is the checklist ID; the info zone shows the
    name, description, progress, and bulk-clear, above the tickable list. The
    toolbar menu edits the checklist, adds an item/heading, or rearranges. Tapping
@@ -66,13 +67,16 @@ using the same on-disk format. New checklist folders are created inside
 
 ## Completion tracking and the log (in `logs/`)
 
-The app creates a `logs` folder at the workspace root if absent. Inside:
+The app creates a `logs` folder at the workspace root if absent. Inside are the
+daily logs:
 
-- `state.csv` — the current done-state per item: `checklist_folder`,
-  `item_folder`, `item_title`, `done`, `marked_at`, `client`.
 - `log-YYYY-MM-DD.csv` — **one file per day**. Every action appends a row:
-  `timestamp`, `action`, `checklist_id`, `checklist_title`, `item_title`,
-  `checklist_folder`, `item_folder`, `client`.
+  `timestamp`, `action`, `client`, `checklist_folder`, `item_folder`.
+
+There is no `state.csv`. **The daily logs are the single source of truth**: the
+current done-state of every item is reconstructed by replaying all the logs in
+timestamp order (last write wins). For speed the app keeps an on-device index
+(see below) as a cache, with this live replay as the fallback.
 
 The `client` column records which app wrote the row; this app writes
 `android-app`.
@@ -88,9 +92,20 @@ Action types include `marked_done`, `marked_not_done`, `marked_not_done_bulk`
 `renamed_item`, `edited_checklist`, `edited_item`, and `reordered_nodes`.
 
 When a checklist, heading, or item is **renamed**, its folder name changes, so
-the app rewrites every logs CSV — replacing the old `checklist_folder` /
+the app rewrites every daily log — replacing the old `checklist_folder` /
 `item_folder` values with the new ones — so historical records stay attached to
 the renamed thing. The rename itself is also logged.
+
+## The index and its status page
+
+Each workspace has an on-device index (Room). It is a disposable cache: it backs
+full-text search and speeds up state lookups, and is reconciled quietly when a
+workspace opens, with a live scan/replay as the fallback. The **Index status**
+page (reached from the checklists toolbar menu) shows whether the index is
+Ready / Updating / Not built, how many checklists are indexed, when it last
+regenerated, and offers a **Regenerate now** button that rebuilds it from
+scratch. Regenerating only touches the app's private index — your files are
+never modified.
 
 ## Deviations from the spec
 

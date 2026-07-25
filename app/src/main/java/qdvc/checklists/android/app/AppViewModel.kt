@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import qdvc.checklists.android.app.data.IndexRepository
+import qdvc.checklists.android.app.data.IndexStatus
 import qdvc.checklists.android.app.data.ItemRepository
 import qdvc.checklists.android.app.data.SettingsRepository
 import qdvc.checklists.android.app.data.ThemeMode
@@ -32,11 +33,14 @@ enum class BrowseMode(val depth: Int) {
     ALL_CHECKLISTS(1),
 }
 
+/** Sub-surface shown within the all-checklists view. */
+enum class ChecklistsSurface { LIST, SEARCH, INDEX_STATUS }
+
 data class BrowseState(
     val mode: BrowseMode = BrowseMode.WORKSPACES,
     val workspace: Workspace? = null,
-    /** Whether the search field is active within the all-checklists view. */
-    val searching: Boolean = false,
+    /** Which sub-surface is showing within the all-checklists view. */
+    val surface: ChecklistsSurface = ChecklistsSurface.LIST,
 )
 
 /** A checklist loaded for display, with per-item done-state resolved. */
@@ -58,6 +62,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val items = ItemRepository(app)
     private val themes = ThemeRepository(app)
     val index = IndexRepository(app, items)
+
+    private val _indexStatus = MutableStateFlow<IndexStatus>(IndexStatus.NotBuilt)
+    val indexStatus: StateFlow<IndexStatus> = _indexStatus.asStateFlow()
 
     // --- theme state ------------------------------------------------------ //
 
@@ -142,6 +149,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (key != null && _currentItem.value == null) restoreCurrent(key)
             }
         }
+        // Mirror the index's live status (e.g. BUILDING progress) into our flow
+        // whenever we're viewing the current workspace's index-status surface.
+        viewModelScope.launch {
+            index.status.collect { live ->
+                if (_browse.value.mode == BrowseMode.ALL_CHECKLISTS) {
+                    _indexStatus.value = live
+                }
+            }
+        }
     }
 
     private fun restoreCurrent(explicitKey: String? = null) {
@@ -183,9 +199,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return when (state.mode) {
             BrowseMode.WORKSPACES -> false
             BrowseMode.ALL_CHECKLISTS -> {
-                if (state.searching) {
-                    // Close the search field first.
-                    _browse.value = state.copy(searching = false)
+                if (state.surface != ChecklistsSurface.LIST) {
+                    // Return to the checklist list from a sub-surface first.
+                    _browse.value = state.copy(surface = ChecklistsSurface.LIST)
                     _searchResults.value = emptyList()
                 } else {
                     _browse.value = BrowseState(BrowseMode.WORKSPACES)
@@ -199,14 +215,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun openWorkspace(ws: Workspace) {
         _browse.value = BrowseState(BrowseMode.ALL_CHECKLISTS, ws)
         loadAllChecklists(ws)
+        refreshIndexStatus(ws)
     }
 
-    /** Toggle the search field within the all-checklists view. */
-    fun setSearching(on: Boolean) {
+    /** Show a sub-surface (list / search / index status) within the checklists view. */
+    fun showChecklistsSurface(surface: ChecklistsSurface) {
         val state = _browse.value
         if (state.mode != BrowseMode.ALL_CHECKLISTS) return
-        _browse.value = state.copy(searching = on)
-        if (!on) _searchResults.value = emptyList()
+        _browse.value = state.copy(surface = surface)
+        if (surface != ChecklistsSurface.SEARCH) _searchResults.value = emptyList()
+        if (surface == ChecklistsSurface.INDEX_STATUS) {
+            state.workspace?.let { refreshIndexStatus(it) }
+        }
+    }
+
+    /** Toggle the search sub-surface within the all-checklists view. */
+    fun setSearching(on: Boolean) {
+        showChecklistsSurface(if (on) ChecklistsSurface.SEARCH else ChecklistsSurface.LIST)
+    }
+
+    private fun refreshIndexStatus(ws: Workspace) {
+        _indexStatus.value = index.statusFor(ws.treeUri)
     }
 
     // --- workspace management --------------------------------------------- //
