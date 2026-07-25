@@ -88,4 +88,30 @@ object Markdown {
         }
         return v
     }
+
+    /**
+     * Inverse of [parse]: render a README with an optional `---` frontmatter
+     * block (keys sorted, matching the studio's `yaml.safe_dump(sort_keys=True)`),
+     * the [headingPrefix] + [title] line, and the [body] after a blank line.
+     */
+    fun build(
+        frontmatter: Map<String, String>,
+        title: String,
+        body: String,
+        headingPrefix: String,
+    ): String {
+        val sb = StringBuilder()
+        if (frontmatter.isNotEmpty()) {
+            sb.append("---\n")
+            for (key in frontmatter.keys.sorted()) {
+                sb.append(key).append(": ").append(frontmatter[key]).append('\n')
+            }
+            sb.append("---\n")
+        }
+        sb.append(headingPrefix).append(title).append('\n')
+        if (body.isNotEmpty()) {
+            sb.append('\n').append(body).append('\n')
+        }
+        return sb.toString()
+    }
 }

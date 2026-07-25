@@ -56,6 +56,51 @@ class NamingTest {
     }
 }
 
+class NamingWriteTest {
+    @Test
+    fun slugifyMatchesStudio() {
+        assertEquals(
+            "engage-autopilot-with-flux-53",
+            Naming.slugify("Engage autopilot & with flux = #53"),
+        )
+    }
+
+    @Test
+    fun folderNames() {
+        assertEquals("BCL091-resupply-lunar-base", Naming.checklistFolderName("BCL091", "Resupply lunar base"))
+        assertEquals("03-power-check", Naming.nodeFolderName(3, "Power check"))
+        assertEquals("BCL091", Naming.checklistFolderName("BCL091", ""))
+    }
+
+    @Test
+    fun idValidation() {
+        assertTrue(Naming.isValidId("BCL091"))
+        assertTrue(!Naming.isValidId("bcl"))
+        assertTrue(!Naming.isValidId("TOOLONGX"))
+        assertTrue(!Naming.isValidId(""))
+    }
+}
+
+class MarkdownBuildTest {
+    @Test
+    fun checklistRoundtrip() {
+        val built = Markdown.build(mapOf("id" to "BCL091"), "Resupply", "Do it.", "# ")
+        val p = Markdown.parse(built)
+        assertEquals("BCL091", p.frontmatter["id"])
+        assertEquals("Resupply", p.title)
+        assertEquals("Do it.", p.body)
+    }
+
+    @Test
+    fun nodeRoundtripNoBody() {
+        val built = Markdown.build(mapOf("kind" to "heading"), "Prep", "", "## ")
+        val p = Markdown.parse(built)
+        assertEquals("heading", p.frontmatter["kind"])
+        assertEquals("Prep", p.title)
+        assertEquals("", p.body)
+    }
+}
+
 class CsvTest {
     @Test
     fun encodeAndParseRoundtrip() {

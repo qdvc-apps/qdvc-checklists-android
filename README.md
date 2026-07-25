@@ -1,9 +1,9 @@
 # QDVC Checklists (Android)
 
 A native Android app that opens a **QDVC Checklist Studio** workspace folder,
-renders every checklist, and lets you tick items off. Completion state and an
-audit trail live in a `logs` folder inside the workspace, so the desktop Studio
-and this app never fight over the same files.
+renders every checklist, lets you tick items off, and lets you create and edit
+checklists, headings, and items. Completion state and an audit trail live in a
+`logs` folder inside the workspace.
 
 - **Language / UI:** Kotlin + Jetpack Compose + Material 3, single Activity.
 - **applicationId / namespace:** `qdvc.checklists.android.app`
@@ -15,27 +15,36 @@ and this app never fight over the same files.
 - Browse every checklist in a workspace; open checklists into a multitasking
   switcher ("Jump").
 - On a checklist you get an **information zone** at the top — the checklist's
-  description (read from its `README.md`), a completion **progress bar**, and a
-  **Mark all items not done** button — above the ordered list of headings and
-  items.
+  name and description (read from its `README.md`), a completion **progress
+  bar**, and a **Mark all items not done** button — above the ordered list of
+  headings and items.
 - Each item shows a tick when done, with greyed-out strikethrough text and, on
   its second line, the date and time it was marked done.
-- **Tap an item** → the Info tab opens that item's detail: its current
-  done/not-done status, a button to toggle it, and the full history of
-  mark/unmark actions recorded for it.
-- Full-text search over a workspace (via the magnifier in the checklists view),
-  backed by an on-device Room FTS4 index with a live-scan fallback.
+- **Tap an item or heading** → the Info tab opens its detail: for an item, its
+  done/not-done status and a toggle button; for a heading, a sensible read-only
+  panel (headings have no done-state); plus the full logged history.
+- **Create and edit** — a New checklist option on Home, and per-checklist
+  options to edit its ID/name/description, add a heading or item, and rearrange
+  headings and items. Items and headings can be renamed from the Info tab. New
+  checklists/items must not collide with an existing ID or name (the studio's
+  exact-ID, case-insensitive-title rule). Every create, edit, rename, and
+  reorder is recorded in the log.
+- Full-text search over a workspace (via the Home menu), backed by an on-device
+  Room FTS4 index with a live-scan fallback.
 - Light / dark / automatic theming with selectable colour themes (incl. a
   pure-black OLED theme); system bars match the app surface.
 
 ## The four tabs
 
-1. **Home** — workspaces, then straight into that workspace's checklists.
-   Search is a toolbar action within the checklist list.
-2. **Checklist** — the info zone (description, progress, bulk-clear) above the
-   tickable item list. Tapping an item opens it on the Info tab.
-3. **Info** — the selected item's detail: done status, a mark done / not done
-   button, and the item's logged history.
+1. **Home** — workspaces, then straight into that workspace's checklists. The
+   toolbar menu holds Search and New checklist.
+2. **Checklist** — toolbar title is the checklist ID; the info zone shows the
+   name, description, progress, and bulk-clear, above the tickable list. The
+   toolbar menu edits the checklist, adds an item/heading, or rearranges. Tapping
+   any row opens it on the Info tab.
+3. **Info** — the selected item/heading's detail panel (styled like the
+   Checklist info zone), a toggle button for items, its logged history, and a
+   toolbar menu to edit its name/description.
 4. **Jump** — switch between open checklists; each row shows the checklist ID,
    its name, and its workspace.
 
@@ -55,19 +64,28 @@ The app only **reads** these files; it never rewrites them.
 The app creates a `logs` folder at the workspace root if absent. Inside:
 
 - `state.csv` — the current done-state per item: `checklist_folder`,
-  `item_folder`, `item_title`, `done`, `marked_at`.
-- `log-YYYY-MM-DD.csv` — **one file per day**. Every mark/unmark action appends a
-  row: `timestamp`, `action`, `checklist_id`, `checklist_title`, `item_title`,
-  `checklist_folder`, `item_folder`.
+  `item_folder`, `item_title`, `done`, `marked_at`, `client`.
+- `log-YYYY-MM-DD.csv` — **one file per day**. Every action appends a row:
+  `timestamp`, `action`, `checklist_id`, `checklist_title`, `item_title`,
+  `checklist_folder`, `item_folder`, `client`.
+
+The `client` column records which app wrote the row; this app writes
+`android-app`.
 
 Items are identified only by their **workspace-relative folder names** (e.g.
 `BCL091-resupply-lunar-base` and `01-power-check`). The app never writes SAF
 document ids or absolute paths, so the log files never reveal where the
 workspace lives on the device or what the workspace folder itself is called.
 
-Action types are `marked_done`, `marked_not_done`, and — for the bulk button —
-`marked_not_done_bulk`. The bulk action writes one row per item (as if each were
-unmarked individually) but with the distinct bulk type.
+Action types include `marked_done`, `marked_not_done`, `marked_not_done_bulk`
+(the bulk button, one row per item), and the structural actions
+`created_checklist`, `created_item`, `created_heading`, `renamed_checklist`,
+`renamed_item`, `edited_checklist`, `edited_item`, and `reordered_nodes`.
+
+When a checklist, heading, or item is **renamed**, its folder name changes, so
+the app rewrites every logs CSV — replacing the old `checklist_folder` /
+`item_folder` values with the new ones — so historical records stay attached to
+the renamed thing. The rename itself is also logged.
 
 ## Deviations from the spec
 

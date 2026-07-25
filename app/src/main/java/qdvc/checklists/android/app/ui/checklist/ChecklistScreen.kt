@@ -14,12 +14,19 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -44,6 +51,9 @@ import qdvc.checklists.android.app.model.Node
 import qdvc.checklists.android.app.model.NodeKind
 import qdvc.checklists.android.app.ui.components.EmptyState
 import qdvc.checklists.android.app.ui.components.OpenChevrons
+import qdvc.checklists.android.app.ui.dialogs.ChecklistFormDialog
+import qdvc.checklists.android.app.ui.dialogs.CreateNodeDialog
+import qdvc.checklists.android.app.ui.dialogs.ReorderDialog
 import qdvc.checklists.android.app.util.DateFormatting
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -53,6 +63,9 @@ fun ChecklistScreen(
     selectedItemDocId: String?,
     onInspectItem: (Node) -> Unit,
     onMarkAllNotDone: () -> Unit,
+    onEditChecklist: (cid: String, name: String, description: String) -> Unit,
+    onCreateNode: (name: String, description: String, kind: NodeKind) -> Unit,
+    onReorder: (orderedFolderNames: List<String>) -> Unit,
 ) {
     if (loaded == null) {
         Scaffold(
@@ -75,6 +88,10 @@ fun ChecklistScreen(
 
     val checklist = loaded.checklist
     var confirmBulk by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var showEdit by remember { mutableStateOf(false) }
+    var showCreate by remember { mutableStateOf(false) }
+    var showReorder by remember { mutableStateOf(false) }
 
     val items = checklist.nodes.filter { it.kind == NodeKind.ITEM }
     val doneCount = items.count { loaded.done[it.docId]?.done == true }
@@ -83,7 +100,30 @@ fun ChecklistScreen(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
-                title = { Text(checklist.title.ifBlank { checklist.cid }) },
+                // Toolbar title is now the checklist ID.
+                title = { Text(checklist.cid) },
+                actions = {
+                    IconButton(onClick = { menuOpen = true }) {
+                        Icon(Icons.Filled.MoreVert, contentDescription = "Menu")
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Edit ID, name, or description") },
+                            onClick = { menuOpen = false; showEdit = true },
+                            leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("New item or heading") },
+                            onClick = { menuOpen = false; showCreate = true },
+                            leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Rearrange items") },
+                            onClick = { menuOpen = false; showReorder = true },
+                            leadingIcon = { Icon(Icons.Filled.SwapVert, contentDescription = null) },
+                        )
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface
                 ),
@@ -93,7 +133,7 @@ fun ChecklistScreen(
         LazyColumn(Modifier.padding(padding).fillMaxSize()) {
             item {
                 InfoZone(
-                    cid = checklist.cid,
+                    name = checklist.title.ifBlank { checklist.cid },
                     description = checklist.description,
                     doneCount = doneCount,
                     total = items.size,
@@ -106,7 +146,11 @@ fun ChecklistScreen(
             }
             items(checklist.nodes, key = { it.docId }) { node ->
                 when (node.kind) {
-                    NodeKind.HEADING -> HeadingRow(node)
+                    NodeKind.HEADING -> HeadingRow(
+                        node = node,
+                        showChevron = node.docId == selectedItemDocId,
+                        onTap = { onInspectItem(node) },
+                    )
                     NodeKind.ITEM -> {
                         val state = loaded.done[node.docId]
                         ItemRow(
@@ -142,11 +186,45 @@ fun ChecklistScreen(
             },
         )
     }
+
+    if (showEdit) {
+        ChecklistFormDialog(
+            title = "Edit checklist",
+            initialCid = checklist.cid,
+            initialName = checklist.title,
+            initialDescription = checklist.description,
+            confirmLabel = "Save",
+            onConfirm = { cid, name, desc ->
+                showEdit = false
+                onEditChecklist(cid, name, desc)
+            },
+            onDismiss = { showEdit = false },
+        )
+    }
+    if (showCreate) {
+        CreateNodeDialog(
+            onConfirm = { name, desc, kind ->
+                showCreate = false
+                onCreateNode(name, desc, kind)
+            },
+            onDismiss = { showCreate = false },
+        )
+    }
+    if (showReorder) {
+        ReorderDialog(
+            nodes = checklist.nodes,
+            onConfirm = { order ->
+                showReorder = false
+                onReorder(order)
+            },
+            onDismiss = { showReorder = false },
+        )
+    }
 }
 
 @Composable
 private fun InfoZone(
-    cid: String,
+    name: String,
     description: String,
     doneCount: Int,
     total: Int,
@@ -159,7 +237,7 @@ private fun InfoZone(
             .padding(16.dp)
     ) {
         Text(
-            cid,
+            name,
             style = MaterialTheme.typography.titleLarge,
             color = MaterialTheme.colorScheme.primary,
             fontWeight = FontWeight.Bold,
@@ -199,15 +277,29 @@ private fun InfoZone(
 }
 
 @Composable
-private fun HeadingRow(node: Node) {
+private fun HeadingRow(
+    node: Node,
+    showChevron: Boolean,
+    onTap: () -> Unit,
+) {
     Column {
-        Text(
-            node.title,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { onTap() }
+                .height(IntrinsicSize.Min)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                node.title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+            )
+            OpenChevrons(visible = showChevron)
+        }
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
     }
 }

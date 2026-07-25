@@ -19,6 +19,7 @@ import qdvc.checklists.android.app.model.Checklist
 import qdvc.checklists.android.app.model.DoneState
 import qdvc.checklists.android.app.model.LogRow
 import qdvc.checklists.android.app.model.Node
+import qdvc.checklists.android.app.model.NodeKind
 import qdvc.checklists.android.app.model.OpenItem
 import qdvc.checklists.android.app.model.Workspace
 
@@ -103,6 +104,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _selectedItem = MutableStateFlow<SelectedItem?>(null)
     val selectedItem: StateFlow<SelectedItem?> = _selectedItem.asStateFlow()
+
+    /** Transient user-facing message (e.g. a validation error). Cleared on read. */
+    private val _message = MutableStateFlow<String?>(null)
+    val message: StateFlow<String?> = _message.asStateFlow()
+
+    fun clearMessage() { _message.value = null }
 
     private val _allChecklists = MutableStateFlow<List<Checklist>>(emptyList())
     val allChecklists: StateFlow<List<Checklist>> = _allChecklists.asStateFlow()
@@ -379,6 +386,96 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             runCatching { items.markAllNotDone(open.workspaceUri, loaded.checklist) }
             loadCurrent()
         }
+    }
+
+    // --- structural mutations (create / edit / reorder) ------------------- //
+
+    /** Create a new checklist in the currently-browsed workspace. */
+    fun createChecklist(cid: String, title: String, description: String) {
+        val ws = _browse.value.workspace ?: return
+        viewModelScope.launch {
+            val res = runCatching {
+                items.createChecklist(ws.treeUri, cid, title, description)
+            }.getOrElse { ItemRepository.WriteResult(false, "Could not create the checklist.") }
+            if (!res.ok) _message.value = res.error
+            loadAllChecklists(ws)
+        }
+    }
+
+    /** Create a new node (heading or item) in the current checklist. */
+    fun createNode(title: String, description: String, kind: NodeKind) {
+        val loaded = _loaded.value ?: return
+        val open = _currentItem.value ?: return
+        viewModelScope.launch {
+            val res = runCatching {
+                items.createNode(open.workspaceUri, loaded.checklist, title, description, kind)
+            }.getOrElse { ItemRepository.WriteResult(false, "Could not create the item.") }
+            if (!res.ok) _message.value = res.error
+            loadCurrent()
+        }
+    }
+
+    /** Edit the current checklist's ID / name / description. */
+    fun editChecklist(cid: String, title: String, description: String) {
+        val loaded = _loaded.value ?: return
+        val open = _currentItem.value ?: return
+        viewModelScope.launch {
+            val res = runCatching {
+                items.editChecklist(open.workspaceUri, loaded.checklist, cid, title, description)
+            }.getOrElse { ItemRepository.WriteResult(false, "Could not update the checklist.") }
+            if (res.ok) {
+                // Identity may have changed; update the open handle so reloads resolve.
+                val fresh = items.loadChecklists(open.workspaceUri)
+                    .firstOrNull { it.cid == cid.trim() }
+                if (fresh != null) {
+                    val updated = open.copy(
+                        checklistDocId = fresh.docId,
+                        checklistCid = fresh.cid,
+                        checklistTitle = fresh.title,
+                    )
+                    replaceCurrent(open, updated)
+                }
+            } else {
+                _message.value = res.error
+            }
+            loadCurrent()
+        }
+    }
+
+    /** Edit a node's name / description. */
+    fun editNode(node: Node, title: String, description: String) {
+        val loaded = _loaded.value ?: return
+        val open = _currentItem.value ?: return
+        viewModelScope.launch {
+            val res = runCatching {
+                items.editNode(open.workspaceUri, loaded.checklist, node, title, description)
+            }.getOrElse { ItemRepository.WriteResult(false, "Could not update the item.") }
+            if (!res.ok) _message.value = res.error
+            loadCurrent()
+            // Re-inspect the (possibly renamed) node so the Info tab stays in sync.
+            val fresh = _loaded.value?.checklist?.nodes
+                ?.firstOrNull { it.title.trim().equals(title.trim(), ignoreCase = true) }
+            if (fresh != null) refreshSelectedItem(open.workspaceUri, _loaded.value!!.checklist, fresh)
+        }
+    }
+
+    /** Persist a reordering of the current checklist's nodes. */
+    fun reorderNodes(orderedFolderNames: List<String>) {
+        val loaded = _loaded.value ?: return
+        val open = _currentItem.value ?: return
+        viewModelScope.launch {
+            val res = runCatching {
+                items.reorderNodes(open.workspaceUri, loaded.checklist, orderedFolderNames)
+            }.getOrElse { ItemRepository.WriteResult(false, "Could not reorder the items.") }
+            if (!res.ok) _message.value = res.error
+            loadCurrent()
+        }
+    }
+
+    private fun replaceCurrent(old: OpenItem, new: OpenItem) {
+        _openItems.value = _openItems.value.map { if (it == old) new else it }
+        _currentItem.value = new
+        persist()
     }
 
     // --- search & index --------------------------------------------------- //

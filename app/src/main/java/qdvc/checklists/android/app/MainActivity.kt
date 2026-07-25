@@ -25,6 +25,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -111,6 +113,16 @@ private fun AppScaffold(vm: AppViewModel) {
 
     val itemOpen = current != null
 
+    val message by vm.message.collectAsStateWithLifecycle()
+    val snackbarHost = remember { SnackbarHostState() }
+    LaunchedEffect(message) {
+        val m = message
+        if (m != null) {
+            snackbarHost.showSnackbar(m)
+            vm.clearMessage()
+        }
+    }
+
     if (showSettings) {
         SettingsScreen(
             themeMode = themeMode,
@@ -135,6 +147,7 @@ private fun AppScaffold(vm: AppViewModel) {
         bottomBar = {
             BottomBar(current = tab, itemOpen = itemOpen, onSelect = vm::selectTab)
         },
+        snackbarHost = { SnackbarHost(snackbarHost) },
         contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(bottom = padding.calculateBottomPadding())) {
@@ -171,6 +184,7 @@ private fun AppScaffold(vm: AppViewModel) {
                         },
                         onSearch = vm::runSearch,
                         onSetSearching = vm::setSearching,
+                        onCreateChecklist = vm::createChecklist,
                         onOpenSettings = { showSettings = true },
                     )
                     Tab.VIEW -> ChecklistScreen(
@@ -178,10 +192,14 @@ private fun AppScaffold(vm: AppViewModel) {
                         selectedItemDocId = selectedItem?.item?.docId,
                         onInspectItem = vm::inspectItem,
                         onMarkAllNotDone = vm::markAllNotDone,
+                        onEditChecklist = vm::editChecklist,
+                        onCreateNode = vm::createNode,
+                        onReorder = vm::reorderNodes,
                     )
                     Tab.INFO -> InfoScreen(
                         selected = selectedItem,
                         onToggleDone = vm::toggleSelectedItemDone,
+                        onEditNode = vm::editNode,
                     )
                     Tab.SWITCHER -> SwitcherScreen(
                         openItems = openItems,

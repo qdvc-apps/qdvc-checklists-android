@@ -24,6 +24,8 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -52,6 +54,7 @@ import qdvc.checklists.android.app.ui.components.EmptyState
 import qdvc.checklists.android.app.ui.components.ListRow
 import qdvc.checklists.android.app.ui.components.OpenChevrons
 import qdvc.checklists.android.app.ui.components.SlideNavHost
+import qdvc.checklists.android.app.ui.dialogs.ChecklistFormDialog
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -69,6 +72,7 @@ fun HomeScreen(
     onOpenHit: (SearchHit) -> Unit,
     onSearch: (String) -> Unit,
     onSetSearching: (Boolean) -> Unit,
+    onCreateChecklist: (cid: String, name: String, description: String) -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val atRoot = browse.mode == BrowseMode.WORKSPACES
@@ -76,6 +80,8 @@ fun HomeScreen(
         BrowseMode.WORKSPACES -> "Workspaces"
         BrowseMode.ALL_CHECKLISTS -> browse.workspace?.name ?: "Checklists"
     }
+    var menuOpen by remember { mutableStateOf(false) }
+    var showCreate by remember { mutableStateOf(false) }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -92,7 +98,7 @@ fun HomeScreen(
                 actions = {
                     when (browse.mode) {
                         BrowseMode.WORKSPACES -> IconButton(onClick = onOpenSettings) {
-                            Icon(Icons.Filled.MoreVert, contentDescription = "Menu")
+                            Icon(Icons.Filled.MoreVert, contentDescription = "Settings")
                         }
                         BrowseMode.ALL_CHECKLISTS -> {
                             if (browse.searching) {
@@ -100,8 +106,27 @@ fun HomeScreen(
                                     Icon(Icons.Filled.Close, contentDescription = "Close search")
                                 }
                             } else {
-                                IconButton(onClick = { onSetSearching(true) }) {
-                                    Icon(Icons.Filled.Search, contentDescription = "Search")
+                                IconButton(onClick = { menuOpen = true }) {
+                                    Icon(Icons.Filled.MoreVert, contentDescription = "Menu")
+                                }
+                                DropdownMenu(
+                                    expanded = menuOpen,
+                                    onDismissRequest = { menuOpen = false },
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("Search") },
+                                        onClick = { menuOpen = false; onSetSearching(true) },
+                                        leadingIcon = {
+                                            Icon(Icons.Filled.Search, contentDescription = null)
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("New checklist") },
+                                        onClick = { menuOpen = false; showCreate = true },
+                                        leadingIcon = {
+                                            Icon(Icons.Filled.Add, contentDescription = null)
+                                        },
+                                    )
                                 }
                             }
                         }
@@ -129,6 +154,21 @@ fun HomeScreen(
                     }
             }
         }
+    }
+
+    if (showCreate) {
+        ChecklistFormDialog(
+            title = "New checklist",
+            initialCid = "",
+            initialName = "",
+            initialDescription = "",
+            confirmLabel = "Create",
+            onConfirm = { cid, name, desc ->
+                showCreate = false
+                onCreateChecklist(cid, name, desc)
+            },
+            onDismiss = { showCreate = false },
+        )
     }
 }
 

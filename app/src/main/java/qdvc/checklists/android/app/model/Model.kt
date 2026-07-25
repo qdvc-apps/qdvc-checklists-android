@@ -42,11 +42,19 @@ data class DoneState(
     val markedAt: String? = null,
 )
 
-/** How a mark/unmark action was performed — recorded in the CSV log. */
+/** How a mark/unmark or structural action was performed — recorded in the log. */
 enum class ActionType(val label: String) {
     MARKED_DONE("marked_done"),
     MARKED_NOT_DONE("marked_not_done"),
     MARKED_NOT_DONE_BULK("marked_not_done_bulk"),
+    CREATED_CHECKLIST("created_checklist"),
+    CREATED_ITEM("created_item"),
+    CREATED_HEADING("created_heading"),
+    RENAMED_CHECKLIST("renamed_checklist"),
+    RENAMED_ITEM("renamed_item"),
+    EDITED_CHECKLIST("edited_checklist"),
+    EDITED_ITEM("edited_item"),
+    REORDERED_NODES("reordered_nodes"),
 }
 
 /** One logged action for an item, read back from a daily log file. */

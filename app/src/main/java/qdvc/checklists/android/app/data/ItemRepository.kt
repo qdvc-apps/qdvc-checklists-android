@@ -271,7 +271,10 @@ class ItemRepository(private val context: Context) {
         val sb = StringBuilder()
         sb.append(
             Csv.encodeRow(
-                listOf("checklist_folder", "item_folder", "item_title", "done", "marked_at")
+                listOf(
+                    "checklist_folder", "item_folder", "item_title",
+                    "done", "marked_at", "client"
+                )
             )
         ).append('\n')
         for (row in states.values) {
@@ -283,6 +286,7 @@ class ItemRepository(private val context: Context) {
                         row.itemTitle,
                         row.done.toString(),
                         row.markedAt ?: "",
+                        CLIENT,
                     )
                 )
             ).append('\n')
@@ -338,7 +342,7 @@ class ItemRepository(private val context: Context) {
                     Csv.encodeRow(
                         listOf(
                             "timestamp", "action", "checklist_id", "checklist_title",
-                            "item_title", "checklist_folder", "item_folder"
+                            "item_title", "checklist_folder", "item_folder", "client"
                         )
                     )
                 )
@@ -348,7 +352,7 @@ class ItemRepository(private val context: Context) {
                     Csv.encodeRow(
                         listOf(
                             e.timestamp, e.action.label, e.checklistId, e.checklistTitle,
-                            e.itemTitle, e.checklistFolder, e.itemFolder
+                            e.itemTitle, e.checklistFolder, e.itemFolder, CLIENT
                         )
                     )
                 )
@@ -479,10 +483,360 @@ class ItemRepository(private val context: Context) {
         changed
     }
 
+    // --- structural writes (create / edit / reorder) ---------------------- //
+
+    private fun createFolder(treeUri: Uri, parentDocId: String, name: String): String? = try {
+        val parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, parentDocId)
+        DocumentsContract.createDocument(
+            resolver, parentUri, DocumentsContract.Document.MIME_TYPE_DIR, name
+        )?.let { DocumentsContract.getDocumentId(it) }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun writeReadme(treeUri: Uri, folderDocId: String, content: String): Boolean {
+        // Find or create README.md inside the folder, then write content.
+        val existing = childrenOf(treeUri, folderDocId).firstOrNull {
+            !isDir(it.mimeType) && it.displayName.equals(README, ignoreCase = true)
+        }
+        val fileUri = if (existing != null) {
+            DocumentsContract.buildDocumentUriUsingTree(treeUri, existing.docId)
+        } else {
+            try {
+                val parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, folderDocId)
+                DocumentsContract.createDocument(resolver, parentUri, "text/markdown", README)
+            } catch (_: Exception) {
+                null
+            }
+        } ?: return false
+        return writeAll(fileUri, content)
+    }
+
+    /** Rename a folder on disk, returning the (possibly new) document id. */
+    private fun renameFolder(treeUri: Uri, folderDocId: String, newName: String): String? = try {
+        val uri = DocumentsContract.buildDocumentUriUsingTree(treeUri, folderDocId)
+        DocumentsContract.renameDocument(resolver, uri, newName)
+            ?.let { DocumentsContract.getDocumentId(it) }
+    } catch (_: Exception) {
+        null
+    }
+
+    /**
+     * Result of a validated create/edit. [ok] false carries a user-facing
+     * [error]; the studio's uniqueness rules (exact ID, case-insensitive title)
+     * are enforced before any write.
+     */
+    data class WriteResult(val ok: Boolean, val error: String? = null)
+
+    /** Create a new checklist folder with a README. Enforces unique ID + title. */
+    suspend fun createChecklist(
+        treeUri: Uri,
+        cid: String,
+        title: String,
+        description: String,
+    ): WriteResult = withContext(Dispatchers.IO) {
+        val trimmedId = cid.trim()
+        val trimmedTitle = title.trim()
+        if (!Naming.isValidId(trimmedId)) {
+            return@withContext WriteResult(false, "ID must be 1–7 uppercase letters or digits.")
+        }
+        if (trimmedTitle.isEmpty()) {
+            return@withContext WriteResult(false, "Name cannot be empty.")
+        }
+        val existing = loadChecklists(treeUri)
+        if (existing.any { it.cid.equals(trimmedId, ignoreCase = false) }) {
+            return@withContext WriteResult(false, "A checklist with ID \u201C$trimmedId\u201D already exists.")
+        }
+        if (existing.any { it.title.trim().equals(trimmedTitle, ignoreCase = true) }) {
+            return@withContext WriteResult(false, "A checklist named \u201C$trimmedTitle\u201D already exists.")
+        }
+        val folderName = Naming.checklistFolderName(trimmedId, trimmedTitle)
+        val root = rootDocId(treeUri)
+        val folderId = createFolder(treeUri, root, folderName)
+            ?: return@withContext WriteResult(false, "Could not create the checklist folder.")
+        val content = Markdown.build(mapOf("id" to trimmedId), trimmedTitle, description.trim(), "# ")
+        if (!writeReadme(treeUri, folderId, content)) {
+            return@withContext WriteResult(false, "Could not write the checklist file.")
+        }
+        logStructural(
+            treeUri, ActionType.CREATED_CHECKLIST,
+            checklistId = trimmedId, checklistTitle = trimmedTitle,
+            itemTitle = "", checklistFolder = folderName, itemFolder = "",
+        )
+        WriteResult(true)
+    }
+
+    /** Create a new node (heading or item) at the end of a checklist. */
+    suspend fun createNode(
+        treeUri: Uri,
+        checklist: Checklist,
+        title: String,
+        description: String,
+        kind: NodeKind,
+    ): WriteResult = withContext(Dispatchers.IO) {
+        val trimmedTitle = title.trim()
+        if (trimmedTitle.isEmpty()) {
+            return@withContext WriteResult(false, "Name cannot be empty.")
+        }
+        if (checklist.nodes.any { it.title.trim().equals(trimmedTitle, ignoreCase = true) }) {
+            return@withContext WriteResult(false, "An item named \u201C$trimmedTitle\u201D already exists in this checklist.")
+        }
+        val sequence = checklist.nodes.size + 1
+        val folderName = Naming.nodeFolderName(sequence, trimmedTitle)
+        val folderId = createFolder(treeUri, checklist.docId, folderName)
+            ?: return@withContext WriteResult(false, "Could not create the item folder.")
+        val content = Markdown.build(mapOf("kind" to kind.wire), trimmedTitle, description.trim(), "## ")
+        if (!writeReadme(treeUri, folderId, content)) {
+            return@withContext WriteResult(false, "Could not write the item file.")
+        }
+        val action = if (kind == NodeKind.HEADING) ActionType.CREATED_HEADING else ActionType.CREATED_ITEM
+        logStructural(
+            treeUri, action,
+            checklistId = checklist.cid, checklistTitle = checklist.title,
+            itemTitle = trimmedTitle, checklistFolder = checklist.folderName, itemFolder = folderName,
+        )
+        WriteResult(true)
+    }
+
+    /**
+     * Edit a checklist's ID/title/description. If the folder name changes (ID or
+     * title changed), the folder is renamed and every logs CSV is rewritten so
+     * historical rows point at the new checklist_folder.
+     */
+    suspend fun editChecklist(
+        treeUri: Uri,
+        checklist: Checklist,
+        newCid: String,
+        newTitle: String,
+        newDescription: String,
+    ): WriteResult = withContext(Dispatchers.IO) {
+        val id = newCid.trim()
+        val title = newTitle.trim()
+        if (!Naming.isValidId(id)) {
+            return@withContext WriteResult(false, "ID must be 1–7 uppercase letters or digits.")
+        }
+        if (title.isEmpty()) return@withContext WriteResult(false, "Name cannot be empty.")
+        val others = loadChecklists(treeUri).filter { it.folderName != checklist.folderName }
+        if (others.any { it.cid == id }) {
+            return@withContext WriteResult(false, "A checklist with ID \u201C$id\u201D already exists.")
+        }
+        if (others.any { it.title.trim().equals(title, ignoreCase = true) }) {
+            return@withContext WriteResult(false, "A checklist named \u201C$title\u201D already exists.")
+        }
+        val newFolderName = Naming.checklistFolderName(id, title)
+        var folderDocId = checklist.docId
+        val renamed = newFolderName != checklist.folderName
+        if (renamed) {
+            folderDocId = renameFolder(treeUri, checklist.docId, newFolderName)
+                ?: return@withContext WriteResult(false, "Could not rename the checklist folder.")
+        }
+        val content = Markdown.build(mapOf("id" to id), title, newDescription.trim(), "# ")
+        if (!writeReadme(treeUri, folderDocId, content)) {
+            return@withContext WriteResult(false, "Could not write the checklist file.")
+        }
+        if (renamed) {
+            rewriteLogsForChecklistRename(treeUri, checklist.folderName, newFolderName)
+        }
+        logStructural(
+            treeUri,
+            if (renamed) ActionType.RENAMED_CHECKLIST else ActionType.EDITED_CHECKLIST,
+            checklistId = id, checklistTitle = title,
+            itemTitle = "", checklistFolder = newFolderName, itemFolder = "",
+        )
+        WriteResult(true)
+    }
+
+    /**
+     * Edit a node's title/description (kind unchanged). A title change renames
+     * the node folder (keeping its sequence prefix) and rewrites logs so history
+     * transfers over.
+     */
+    suspend fun editNode(
+        treeUri: Uri,
+        checklist: Checklist,
+        node: Node,
+        newTitle: String,
+        newDescription: String,
+    ): WriteResult = withContext(Dispatchers.IO) {
+        val title = newTitle.trim()
+        if (title.isEmpty()) return@withContext WriteResult(false, "Name cannot be empty.")
+        if (checklist.nodes.any {
+                it.folderName != node.folderName &&
+                    it.title.trim().equals(title, ignoreCase = true)
+            }
+        ) {
+            return@withContext WriteResult(false, "An item named \u201C$title\u201D already exists in this checklist.")
+        }
+        val seq = Naming.parseNodeSequence(node.folderName) ?: (checklist.nodes.indexOf(node) + 1)
+        val newFolderName = Naming.nodeFolderName(seq, title)
+        var folderDocId = node.docId
+        val renamed = newFolderName != node.folderName
+        if (renamed) {
+            folderDocId = renameFolder(treeUri, node.docId, newFolderName)
+                ?: return@withContext WriteResult(false, "Could not rename the item folder.")
+        }
+        val content = Markdown.build(mapOf("kind" to node.kind.wire), title, newDescription.trim(), "## ")
+        if (!writeReadme(treeUri, folderDocId, content)) {
+            return@withContext WriteResult(false, "Could not write the item file.")
+        }
+        if (renamed) {
+            rewriteLogsForNodeRename(treeUri, checklist.folderName, node.folderName, newFolderName)
+        }
+        logStructural(
+            treeUri,
+            if (renamed) ActionType.RENAMED_ITEM else ActionType.EDITED_ITEM,
+            checklistId = checklist.cid, checklistTitle = checklist.title,
+            itemTitle = title, checklistFolder = checklist.folderName, itemFolder = newFolderName,
+        )
+        WriteResult(true)
+    }
+
+    /**
+     * Persist a new node order. [orderedFolderNames] lists the current node
+     * folder names in their desired order; folders are renumbered on disk (via a
+     * temporary prefix to avoid collisions) and logs are rewritten to match.
+     */
+    suspend fun reorderNodes(
+        treeUri: Uri,
+        checklist: Checklist,
+        orderedFolderNames: List<String>,
+    ): WriteResult = withContext(Dispatchers.IO) {
+        val byFolder = checklist.nodes.associateBy { it.folderName }
+        val ordered = orderedFolderNames.mapNotNull { byFolder[it] }
+        if (ordered.size != checklist.nodes.size) {
+            return@withContext WriteResult(false, "Could not reorder (list changed).")
+        }
+        // Stage 1: move each changed folder to a temporary name.
+        data class Pending(val node: Node, val tmpDocId: String, val dest: String)
+        val pending = ArrayList<Pending>()
+        val renameMap = ArrayList<Pair<String, String>>() // old -> new folder name
+        for ((i, node) in ordered.withIndex()) {
+            val target = Naming.nodeFolderName(i + 1, node.title)
+            if (target == node.folderName) continue
+            val tmpName = ".reorder-${(i + 1).toString().padStart(2, '0')}-${System.nanoTime()}"
+            val tmpId = renameFolder(treeUri, node.docId, tmpName)
+                ?: return@withContext WriteResult(false, "Could not reorder the items.")
+            pending.add(Pending(node, tmpId, target))
+            renameMap.add(node.folderName to target)
+        }
+        // Stage 2: move temporaries to their final names.
+        for (p in pending) {
+            renameFolder(treeUri, p.tmpDocId, p.dest)
+                ?: return@withContext WriteResult(false, "Could not finish reordering.")
+        }
+        for ((old, new) in renameMap) {
+            rewriteLogsForNodeRename(treeUri, checklist.folderName, old, new)
+        }
+        logStructural(
+            treeUri, ActionType.REORDERED_NODES,
+            checklistId = checklist.cid, checklistTitle = checklist.title,
+            itemTitle = "", checklistFolder = checklist.folderName, itemFolder = "",
+        )
+        WriteResult(true)
+    }
+
+    // --- log rewriting on rename ------------------------------------------ //
+
+    private fun logCsvFiles(treeUri: Uri, logsId: String): List<ChildInfo> =
+        childrenOf(treeUri, logsId).filter {
+            !isDir(it.mimeType) &&
+                (it.displayName == STATE_FILE ||
+                    (it.displayName.startsWith("log-") && it.displayName.endsWith(".csv")))
+        }
+
+    /** Rewrite checklist_folder in every logs CSV (columns 0 of state, 5 of log). */
+    private fun rewriteLogsForChecklistRename(treeUri: Uri, oldFolder: String, newFolder: String) {
+        val logsId = ensureLogsDir(treeUri) ?: return
+        for (f in logCsvFiles(treeUri, logsId)) {
+            val uri = DocumentsContract.buildDocumentUriUsingTree(treeUri, f.docId)
+            val isState = f.displayName == STATE_FILE
+            val col = if (isState) 0 else 5
+            rewriteCsvColumn(uri, col) { value, _ -> if (value == oldFolder) newFolder else value }
+        }
+    }
+
+    /** Rewrite item_folder rows for a given checklist across all logs CSVs. */
+    private fun rewriteLogsForNodeRename(
+        treeUri: Uri,
+        checklistFolder: String,
+        oldNodeFolder: String,
+        newNodeFolder: String,
+    ) {
+        val logsId = ensureLogsDir(treeUri) ?: return
+        for (f in logCsvFiles(treeUri, logsId)) {
+            val uri = DocumentsContract.buildDocumentUriUsingTree(treeUri, f.docId)
+            val isState = f.displayName == STATE_FILE
+            val checklistCol = if (isState) 0 else 5
+            val itemCol = if (isState) 1 else 6
+            rewriteCsvRows(uri) { fields ->
+                if (fields.size > itemCol &&
+                    fields[checklistCol] == checklistFolder &&
+                    fields[itemCol] == oldNodeFolder
+                ) {
+                    fields.toMutableList().also { it[itemCol] = newNodeFolder }
+                } else {
+                    fields
+                }
+            }
+        }
+    }
+
+    private fun rewriteCsvColumn(uri: Uri, col: Int, map: (String, Int) -> String) {
+        rewriteCsvRows(uri) { fields ->
+            if (fields.size > col) {
+                fields.toMutableList().also { it[col] = map(it[col], col) }
+            } else fields
+        }
+    }
+
+    private fun rewriteCsvRows(uri: Uri, transform: (List<String>) -> List<String>) {
+        val lines = readAllLines(uri)
+        if (lines.isEmpty()) return
+        val out = StringBuilder()
+        for ((i, line) in lines.withIndex()) {
+            if (i == 0 || line.isBlank()) {
+                out.append(line).append('\n')
+                continue
+            }
+            val fields = Csv.parseRow(line)
+            out.append(Csv.encodeRow(transform(fields))).append('\n')
+        }
+        writeAll(uri, out.toString())
+    }
+
+    /** Append a single structural action row to today's log. */
+    private fun logStructural(
+        treeUri: Uri,
+        action: ActionType,
+        checklistId: String,
+        checklistTitle: String,
+        itemTitle: String,
+        checklistFolder: String,
+        itemFolder: String,
+    ) {
+        val now = Date()
+        appendActionLog(
+            treeUri,
+            listOf(
+                LogEntry(
+                    timestamp = ISO.format(now),
+                    dateStamp = DAY.format(now),
+                    action = action,
+                    checklistId = checklistId,
+                    checklistTitle = checklistTitle,
+                    itemTitle = itemTitle,
+                    checklistFolder = checklistFolder,
+                    itemFolder = itemFolder,
+                )
+            )
+        )
+    }
+
     companion object {
         private const val README = "README.md"
         private const val LOGS_DIR = "logs"
         private const val STATE_FILE = "state.csv"
+        private const val CLIENT = "android-app"
 
         private val ISO = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US)
         private val DAY = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
