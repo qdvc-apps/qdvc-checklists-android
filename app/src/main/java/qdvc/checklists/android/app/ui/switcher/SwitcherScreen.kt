@@ -10,7 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -126,15 +126,14 @@ private fun SwitcherRow(
         // Close action behind the row.
         Box(
             Modifier
-                .align(Alignment.CenterEnd)
-                .width(revealWidthDp)
-                .height(72.dp)
+                .matchParentSize()
                 .background(MaterialTheme.colorScheme.error),
-            contentAlignment = Alignment.Center,
+            contentAlignment = Alignment.CenterEnd,
         ) {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
+                modifier = Modifier.width(revealWidthDp),
             ) {
                 Icon(
                     Icons.Filled.Close,
@@ -173,7 +172,8 @@ private fun SwitcherRow(
                 .clickable(enabled = !reordering) { onSelect() }
         ) {
             Row(
-                Modifier.fillMaxWidth().height(72.dp).padding(horizontal = 16.dp),
+                Modifier.fillMaxWidth().heightIn(min = 72.dp)
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
@@ -190,15 +190,20 @@ private fun SwitcherRow(
                             androidx.compose.foundation.layout.Spacer(Modifier.width(8.dp))
                         }
                         Text(
-                            item.checklistTitle,
+                            item.checklistCid,
                             style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
-                            color = MaterialTheme.colorScheme.onSurface,
+                            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
                         )
                     }
                     Text(
-                        item.workspaceName,
+                        item.checklistTitle,
                         style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        item.workspaceName,
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }

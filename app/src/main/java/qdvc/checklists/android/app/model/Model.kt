@@ -48,3 +48,9 @@ enum class ActionType(val label: String) {
     MARKED_NOT_DONE("marked_not_done"),
     MARKED_NOT_DONE_BULK("marked_not_done_bulk"),
 }
+
+/** One logged action for an item, read back from a daily log file. */
+data class LogRow(
+    val timestamp: String,
+    val action: String,
+)

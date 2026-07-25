@@ -18,6 +18,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -36,18 +37,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import qdvc.checklists.android.app.LoadedChecklist
-import qdvc.checklists.android.app.model.DoneState
 import qdvc.checklists.android.app.model.Node
 import qdvc.checklists.android.app.model.NodeKind
 import qdvc.checklists.android.app.ui.components.EmptyState
-import java.text.SimpleDateFormat
-import java.util.Locale
+import qdvc.checklists.android.app.util.DateFormatting
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChecklistScreen(
     loaded: LoadedChecklist?,
-    onSetDone: (Node, Boolean) -> Unit,
+    onInspectItem: (Node) -> Unit,
     onMarkAllNotDone: () -> Unit,
 ) {
     if (loaded == null) {
@@ -69,8 +68,10 @@ fun ChecklistScreen(
     }
 
     val checklist = loaded.checklist
-    var infoDialogNode by remember { mutableStateOf<Node?>(null) }
     var confirmBulk by remember { mutableStateOf(false) }
+
+    val items = checklist.nodes.filter { it.kind == NodeKind.ITEM }
+    val doneCount = items.count { loaded.done[it.docId]?.done == true }
 
     Scaffold(
         topBar = {
@@ -87,6 +88,8 @@ fun ChecklistScreen(
                 InfoZone(
                     cid = checklist.cid,
                     description = checklist.description,
+                    doneCount = doneCount,
+                    total = items.size,
                     onMarkAllNotDone = { confirmBulk = true },
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
@@ -102,27 +105,13 @@ fun ChecklistScreen(
                         ItemRow(
                             node = node,
                             done = state?.done == true,
-                            onToggleUndone = { onSetDone(node, true) },
-                            onTapDone = { infoDialogNode = node },
+                            markedAt = state?.markedAt,
+                            onTap = { onInspectItem(node) },
                         )
                     }
                 }
             }
         }
-    }
-
-    val dialogNode = infoDialogNode
-    if (dialogNode != null) {
-        val state = loaded.done[dialogNode.docId]
-        DoneInfoDialog(
-            node = dialogNode,
-            state = state,
-            onDismiss = { infoDialogNode = null },
-            onUnmark = {
-                onSetDone(dialogNode, false)
-                infoDialogNode = null
-            },
-        )
     }
 
     if (confirmBulk) {
@@ -148,7 +137,13 @@ fun ChecklistScreen(
 }
 
 @Composable
-private fun InfoZone(cid: String, description: String, onMarkAllNotDone: () -> Unit) {
+private fun InfoZone(
+    cid: String,
+    description: String,
+    doneCount: Int,
+    total: Int,
+    onMarkAllNotDone: () -> Unit,
+) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -169,6 +164,18 @@ private fun InfoZone(cid: String, description: String, onMarkAllNotDone: () -> U
                 modifier = Modifier.padding(top = 6.dp),
             )
         }
+        // Progress (moved here from the Info tab).
+        val fraction = if (total == 0) 0f else doneCount.toFloat() / total
+        Text(
+            "$doneCount of $total items done",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 12.dp),
+        )
+        LinearProgressIndicator(
+            progress = { fraction },
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+        )
         OutlinedButton(
             onClick = onMarkAllNotDone,
             modifier = Modifier.padding(top = 12.dp),
@@ -201,14 +208,14 @@ private fun HeadingRow(node: Node) {
 private fun ItemRow(
     node: Node,
     done: Boolean,
-    onToggleUndone: () -> Unit,
-    onTapDone: () -> Unit,
+    markedAt: String?,
+    onTap: () -> Unit,
 ) {
     Column {
         Row(
             Modifier
                 .fillMaxWidth()
-                .clickable { if (done) onTapDone() else onToggleUndone() }
+                .clickable { onTap() }
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -227,51 +234,16 @@ private fun ItemRow(
                     color = if (done) MaterialTheme.colorScheme.onSurfaceVariant
                     else MaterialTheme.colorScheme.onSurface,
                 )
-                if (node.description.isNotBlank()) {
+                // Second line: the completion time when done, otherwise nothing.
+                if (done) {
                     Text(
-                        node.description,
+                        "Done " + DateFormatting.humanMarkedAt(markedAt),
                         style = MaterialTheme.typography.bodyMedium,
-                        textDecoration = if (done) TextDecoration.LineThrough else null,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
-    }
-}
-
-@Composable
-private fun DoneInfoDialog(
-    node: Node,
-    state: DoneState?,
-    onDismiss: () -> Unit,
-    onUnmark: () -> Unit,
-) {
-    val whenText = remember(state?.markedAt) { formatMarkedAt(state?.markedAt) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Already completed") },
-        text = {
-            Text("“${node.title}” was marked as done on $whenText.")
-        },
-        confirmButton = {
-            TextButton(onClick = onUnmark) { Text("Un-mark as done") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Keep done") }
-        },
-    )
-}
-
-private fun formatMarkedAt(iso: String?): String {
-    if (iso.isNullOrBlank()) return "an unknown date"
-    return try {
-        val parser = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US)
-        val date = parser.parse(iso)
-        val out = SimpleDateFormat("d MMM yyyy 'at' HH:mm", Locale.getDefault())
-        if (date != null) out.format(date) else iso
-    } catch (_: Exception) {
-        iso
     }
 }

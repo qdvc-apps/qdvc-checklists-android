@@ -15,6 +15,7 @@ data class Workspace(
 data class OpenItem(
     val workspaceUri: Uri,
     val checklistDocId: String,
+    val checklistCid: String,
     val checklistTitle: String,
     val workspaceName: String,
 )

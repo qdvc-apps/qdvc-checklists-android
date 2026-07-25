@@ -1,28 +1,26 @@
 package qdvc.checklists.android.app.ui.home
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Checklist
-import androidx.compose.material.icons.filled.CreateNewFolder
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -37,20 +35,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import qdvc.checklists.android.app.BrowseMode
 import qdvc.checklists.android.app.BrowseState
-import qdvc.checklists.android.app.data.IndexStatus
 import qdvc.checklists.android.app.data.index.SearchHit
 import qdvc.checklists.android.app.model.Checklist
+import qdvc.checklists.android.app.model.NodeKind
 import qdvc.checklists.android.app.model.Workspace
 import qdvc.checklists.android.app.ui.components.EmptyState
 import qdvc.checklists.android.app.ui.components.ListRow
 import qdvc.checklists.android.app.ui.components.SlideNavHost
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -59,25 +56,20 @@ fun HomeScreen(
     workspaces: List<Workspace>,
     allChecklists: List<Checklist>,
     searchResults: List<SearchHit>,
-    indexStatus: IndexStatus,
     onAddWorkspace: () -> Unit,
     onRemoveWorkspace: (Workspace) -> Unit,
     onOpenWorkspace: (Workspace) -> Unit,
-    onGoBrowse: (BrowseMode) -> Unit,
     onBack: () -> Unit,
     onOpenChecklist: (Checklist) -> Unit,
     onOpenHit: (SearchHit) -> Unit,
     onSearch: (String) -> Unit,
-    onRegenerate: () -> Unit,
+    onSetSearching: (Boolean) -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val atRoot = browse.mode == BrowseMode.WORKSPACES
     val title = when (browse.mode) {
         BrowseMode.WORKSPACES -> "Workspaces"
-        BrowseMode.OVERVIEW -> browse.workspace?.name ?: "Workspace"
-        BrowseMode.ALL_CHECKLISTS -> "All checklists"
-        BrowseMode.SEARCH -> "Search"
-        BrowseMode.INDEX_STATUS -> "Index status"
+        BrowseMode.ALL_CHECKLISTS -> browse.workspace?.name ?: "Checklists"
     }
 
     Scaffold(
@@ -92,9 +84,20 @@ fun HomeScreen(
                     }
                 },
                 actions = {
-                    if (atRoot) {
-                        IconButton(onClick = onOpenSettings) {
+                    when (browse.mode) {
+                        BrowseMode.WORKSPACES -> IconButton(onClick = onOpenSettings) {
                             Icon(Icons.Filled.MoreVert, contentDescription = "Menu")
+                        }
+                        BrowseMode.ALL_CHECKLISTS -> {
+                            if (browse.searching) {
+                                IconButton(onClick = { onSetSearching(false) }) {
+                                    Icon(Icons.Filled.Close, contentDescription = "Close search")
+                                }
+                            } else {
+                                IconButton(onClick = { onSetSearching(true) }) {
+                                    Icon(Icons.Filled.Search, contentDescription = "Search")
+                                }
+                            }
                         }
                     }
                 },
@@ -112,10 +115,12 @@ fun HomeScreen(
                 BrowseMode.WORKSPACES -> WorkspaceList(
                     workspaces, onAddWorkspace, onOpenWorkspace, onRemoveWorkspace
                 )
-                BrowseMode.OVERVIEW -> OverviewMenu(onGoBrowse)
-                BrowseMode.ALL_CHECKLISTS -> ChecklistList(allChecklists, onOpenChecklist)
-                BrowseMode.SEARCH -> SearchSurface(searchResults, onSearch, onOpenHit)
-                BrowseMode.INDEX_STATUS -> IndexStatusSurface(indexStatus, onRegenerate)
+                BrowseMode.ALL_CHECKLISTS ->
+                    if (browse.searching) {
+                        SearchSurface(searchResults, onSearch, onOpenHit)
+                    } else {
+                        ChecklistList(allChecklists, onOpenChecklist)
+                    }
             }
         }
     }
@@ -171,7 +176,7 @@ private fun WorkspaceList(
             title = { Text("Remove workspace?") },
             text = {
                 Text(
-                    "This removes “${target.name}” from the app only. Your files on " +
+                    "This removes \u201C${target.name}\u201D from the app only. Your files on " +
                         "disk are never deleted."
                 )
             },
@@ -186,36 +191,6 @@ private fun WorkspaceList(
 }
 
 @Composable
-private fun OverviewMenu(onGo: (BrowseMode) -> Unit) {
-    LazyColumn(Modifier.fillMaxSize()) {
-        item {
-            ListRow(
-                title = "All checklists",
-                subtitle = "Every checklist in this workspace",
-                leadingIcon = Icons.Filled.Checklist,
-                onClick = { onGo(BrowseMode.ALL_CHECKLISTS) },
-            )
-        }
-        item {
-            ListRow(
-                title = "Search",
-                subtitle = "Find checklists by title or contents",
-                leadingIcon = Icons.Filled.Search,
-                onClick = { onGo(BrowseMode.SEARCH) },
-            )
-        }
-        item {
-            ListRow(
-                title = "Index status",
-                subtitle = "State of the search index",
-                leadingIcon = Icons.Filled.Info,
-                onClick = { onGo(BrowseMode.INDEX_STATUS) },
-            )
-        }
-    }
-}
-
-@Composable
 private fun ChecklistList(checklists: List<Checklist>, onOpen: (Checklist) -> Unit) {
     if (checklists.isEmpty()) {
         EmptyState("No checklists found in this workspace.")
@@ -223,14 +198,63 @@ private fun ChecklistList(checklists: List<Checklist>, onOpen: (Checklist) -> Un
     }
     LazyColumn(Modifier.fillMaxSize()) {
         items(checklists, key = { it.docId }) { c ->
-            val itemCount = c.nodes.count { it.kind == qdvc.checklists.android.app.model.NodeKind.ITEM }
-            ListRow(
+            val itemCount = c.nodes.count { it.kind == NodeKind.ITEM }
+            ChecklistRow(
+                cid = c.cid,
                 title = c.title.ifBlank { c.cid },
-                subtitle = "${c.cid} · $itemCount items",
-                leadingIcon = Icons.Filled.Checklist,
+                itemCount = itemCount,
                 onClick = { onOpen(c) },
             )
         }
+    }
+}
+
+/** A checklist row with its ID rendered in the accent colour. */
+@Composable
+private fun ChecklistRow(
+    cid: String,
+    title: String,
+    itemCount: Int?,
+    onClick: () -> Unit,
+) {
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onClick() }
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Checklist,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(end = 16.dp),
+            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Row {
+                    Text(
+                        cid,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    if (itemCount != null) {
+                        Text(
+                            "  \u00B7  $itemCount items",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
     }
 }
 
@@ -253,41 +277,18 @@ private fun SearchSurface(
         if (query.isBlank()) {
             EmptyState("Type to search checklists in this workspace.")
         } else if (results.isEmpty()) {
-            EmptyState("No matches for “$query”.")
+            EmptyState("No matches for \u201C$query\u201D.")
         } else {
             LazyColumn(Modifier.fillMaxSize()) {
                 items(results, key = { it.docId }) { hit ->
-                    ListRow(
+                    ChecklistRow(
+                        cid = hit.cid,
                         title = hit.title.ifBlank { hit.cid },
-                        subtitle = hit.snippet.ifBlank { hit.cid },
-                        leadingIcon = Icons.Filled.Checklist,
+                        itemCount = null,
                         onClick = { onOpen(hit) },
                     )
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun IndexStatusSurface(status: IndexStatus, onRegenerate: () -> Unit) {
-    val fmt = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
-        val text = when (status) {
-            is IndexStatus.NotBuilt -> "The index is not built yet."
-            is IndexStatus.Building ->
-                "Building… ${status.count} done (current: ${status.currentFile})"
-            is IndexStatus.Ready ->
-                "Ready: ${status.count} checklists indexed.\n" +
-                    "Last rebuilt ${fmt.format(Date(status.lastRebuilt))}."
-        }
-        Text(text, style = MaterialTheme.typography.bodyLarge)
-        ListRow(
-            title = "Regenerate now",
-            subtitle = "Rebuilds only the app's private index; never touches your files.",
-            leadingIcon = Icons.Filled.Refresh,
-            onClick = onRegenerate,
-            modifier = Modifier.padding(top = 16.dp),
-        )
     }
 }

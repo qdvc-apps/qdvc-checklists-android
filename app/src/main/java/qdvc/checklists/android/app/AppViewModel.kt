@@ -9,7 +9,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import qdvc.checklists.android.app.data.IndexRepository
-import qdvc.checklists.android.app.data.IndexStatus
 import qdvc.checklists.android.app.data.ItemRepository
 import qdvc.checklists.android.app.data.SettingsRepository
 import qdvc.checklists.android.app.data.ThemeMode
@@ -18,6 +17,7 @@ import qdvc.checklists.android.app.data.ThemeSpec
 import qdvc.checklists.android.app.data.index.SearchHit
 import qdvc.checklists.android.app.model.Checklist
 import qdvc.checklists.android.app.model.DoneState
+import qdvc.checklists.android.app.model.LogRow
 import qdvc.checklists.android.app.model.Node
 import qdvc.checklists.android.app.model.OpenItem
 import qdvc.checklists.android.app.model.Workspace
@@ -28,21 +28,27 @@ enum class Tab { HOME, VIEW, INFO, SWITCHER }
 /** Levels of the Item-1 home hierarchy. */
 enum class BrowseMode(val depth: Int) {
     WORKSPACES(0),
-    OVERVIEW(1),
-    ALL_CHECKLISTS(2),
-    SEARCH(2),
-    INDEX_STATUS(2),
+    ALL_CHECKLISTS(1),
 }
 
 data class BrowseState(
     val mode: BrowseMode = BrowseMode.WORKSPACES,
     val workspace: Workspace? = null,
+    /** Whether the search field is active within the all-checklists view. */
+    val searching: Boolean = false,
 )
 
 /** A checklist loaded for display, with per-item done-state resolved. */
 data class LoadedChecklist(
     val checklist: Checklist,
     val done: Map<String, DoneState>, // key = item docId
+)
+
+/** The item currently being inspected on the Info tab. */
+data class SelectedItem(
+    val item: Node,
+    val done: DoneState?,
+    val log: List<LogRow>,
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -95,14 +101,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _loaded = MutableStateFlow<LoadedChecklist?>(null)
     val loaded: StateFlow<LoadedChecklist?> = _loaded.asStateFlow()
 
+    private val _selectedItem = MutableStateFlow<SelectedItem?>(null)
+    val selectedItem: StateFlow<SelectedItem?> = _selectedItem.asStateFlow()
+
     private val _allChecklists = MutableStateFlow<List<Checklist>>(emptyList())
     val allChecklists: StateFlow<List<Checklist>> = _allChecklists.asStateFlow()
 
     private val _searchResults = MutableStateFlow<List<SearchHit>>(emptyList())
     val searchResults: StateFlow<List<SearchHit>> = _searchResults.asStateFlow()
-
-    private val _indexStatus = MutableStateFlow<IndexStatus>(IndexStatus.NotBuilt)
-    val indexStatus: StateFlow<IndexStatus> = _indexStatus.asStateFlow()
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
@@ -129,7 +135,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (key != null && _currentItem.value == null) restoreCurrent(key)
             }
         }
-        viewModelScope.launch { index.status.collect { _indexStatus.value = it } }
     }
 
     private fun restoreCurrent(explicitKey: String? = null) {
@@ -170,29 +175,31 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val state = _browse.value
         return when (state.mode) {
             BrowseMode.WORKSPACES -> false
-            BrowseMode.OVERVIEW -> {
-                _browse.value = BrowseState(BrowseMode.WORKSPACES)
-                true
-            }
-            BrowseMode.ALL_CHECKLISTS, BrowseMode.SEARCH, BrowseMode.INDEX_STATUS -> {
-                _browse.value = state.copy(mode = BrowseMode.OVERVIEW)
+            BrowseMode.ALL_CHECKLISTS -> {
+                if (state.searching) {
+                    // Close the search field first.
+                    _browse.value = state.copy(searching = false)
+                    _searchResults.value = emptyList()
+                } else {
+                    _browse.value = BrowseState(BrowseMode.WORKSPACES)
+                }
                 true
             }
         }
     }
 
-    fun openWorkspaceOverview(ws: Workspace) {
-        _browse.value = BrowseState(BrowseMode.OVERVIEW, ws)
+    /** Open a workspace straight into its all-checklists list. */
+    fun openWorkspace(ws: Workspace) {
+        _browse.value = BrowseState(BrowseMode.ALL_CHECKLISTS, ws)
+        loadAllChecklists(ws)
     }
 
-    fun goBrowse(mode: BrowseMode) {
-        val ws = _browse.value.workspace ?: return
-        _browse.value = _browse.value.copy(mode = mode)
-        when (mode) {
-            BrowseMode.ALL_CHECKLISTS -> loadAllChecklists(ws)
-            BrowseMode.INDEX_STATUS -> refreshIndexStatus(ws)
-            else -> {}
-        }
+    /** Toggle the search field within the all-checklists view. */
+    fun setSearching(on: Boolean) {
+        val state = _browse.value
+        if (state.mode != BrowseMode.ALL_CHECKLISTS) return
+        _browse.value = state.copy(searching = on)
+        if (!on) _searchResults.value = emptyList()
     }
 
     // --- workspace management --------------------------------------------- //
@@ -228,6 +235,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val open = OpenItem(
             workspaceUri = ws.treeUri,
             checklistDocId = checklist.docId,
+            checklistCid = checklist.cid,
             checklistTitle = checklist.title,
             workspaceName = ws.name,
         )
@@ -237,6 +245,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         _openItems.value = list
         _currentItem.value = open
+        _selectedItem.value = null
         _tab.value = Tab.VIEW
         persist()
         loadCurrent()
@@ -256,6 +265,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun selectOpenItem(open: OpenItem) {
         _currentItem.value = open
+        _selectedItem.value = null
         _tab.value = Tab.VIEW
         persist()
         loadCurrent()
@@ -308,8 +318,52 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     states["${checklist.docId}\u0000${n.docId}"]?.let { perItem[n.docId] = it }
                 }
                 _loaded.value = LoadedChecklist(checklist, perItem)
+                // If an item is being inspected, refresh its resolved state.
+                _selectedItem.value?.let { sel ->
+                    val fresh = checklist.nodes.firstOrNull { it.docId == sel.item.docId }
+                    if (fresh != null) refreshSelectedItem(open.workspaceUri, checklist, fresh)
+                }
             }
             _busy.value = false
+        }
+    }
+
+    // --- item inspection (Info tab) --------------------------------------- //
+
+    /** Tap an item in the checklist → inspect it on the Info tab. */
+    fun inspectItem(item: Node) {
+        val loaded = _loaded.value ?: return
+        val open = _currentItem.value ?: return
+        _tab.value = Tab.INFO
+        viewModelScope.launch {
+            refreshSelectedItem(open.workspaceUri, loaded.checklist, item)
+        }
+    }
+
+    private suspend fun refreshSelectedItem(
+        workspaceUri: Uri,
+        checklist: Checklist,
+        item: Node,
+    ) {
+        val states = runCatching { items.loadDoneStates(workspaceUri) }
+            .getOrDefault(emptyMap())
+        val done = states["${checklist.docId}\u0000${item.docId}"]
+        val log = runCatching {
+            items.loadItemLog(workspaceUri, checklist.docId, item.docId)
+        }.getOrDefault(emptyList())
+        _selectedItem.value = SelectedItem(item, done, log)
+    }
+
+    /** Toggle the currently-inspected item's done-state (from the Info tab). */
+    fun toggleSelectedItemDone() {
+        val sel = _selectedItem.value ?: return
+        val loaded = _loaded.value ?: return
+        val open = _currentItem.value ?: return
+        val newDone = !(sel.done?.done ?: false)
+        viewModelScope.launch {
+            runCatching { items.setItemDone(open.workspaceUri, loaded.checklist, sel.item, newDone) }
+            loadCurrent()
+            refreshSelectedItem(open.workspaceUri, loaded.checklist, sel.item)
         }
     }
 
@@ -364,9 +418,5 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun regenerateIndex() {
         val ws = _browse.value.workspace ?: return
         viewModelScope.launch { runCatching { index.regenerate(ws.treeUri) } }
-    }
-
-    private fun refreshIndexStatus(ws: Workspace) {
-        _indexStatus.value = index.statusFor(ws.treeUri)
     }
 }

@@ -78,9 +78,9 @@ private fun AppScaffold(vm: AppViewModel) {
     val openItems by vm.openItems.collectAsStateWithLifecycle()
     val current by vm.currentItem.collectAsStateWithLifecycle()
     val loaded by vm.loaded.collectAsStateWithLifecycle()
+    val selectedItem by vm.selectedItem.collectAsStateWithLifecycle()
     val allChecklists by vm.allChecklists.collectAsStateWithLifecycle()
     val searchResults by vm.searchResults.collectAsStateWithLifecycle()
-    val indexStatus by vm.indexStatus.collectAsStateWithLifecycle()
 
     val themeMode by vm.themeMode.collectAsStateWithLifecycle()
     val lightId by vm.lightThemeId.collectAsStateWithLifecycle()
@@ -135,11 +135,9 @@ private fun AppScaffold(vm: AppViewModel) {
                     workspaces = workspaces,
                     allChecklists = allChecklists,
                     searchResults = searchResults,
-                    indexStatus = indexStatus,
                     onAddWorkspace = { picker.launch(null) },
                     onRemoveWorkspace = vm::removeWorkspace,
-                    onOpenWorkspace = vm::openWorkspaceOverview,
-                    onGoBrowse = vm::goBrowse,
+                    onOpenWorkspace = vm::openWorkspace,
                     onBack = { vm.browseUp() },
                     onOpenChecklist = { c ->
                         browse.workspace?.let { vm.openChecklist(it, c) }
@@ -148,15 +146,18 @@ private fun AppScaffold(vm: AppViewModel) {
                         browse.workspace?.let { vm.openByHit(it, hit) }
                     },
                     onSearch = vm::runSearch,
-                    onRegenerate = vm::regenerateIndex,
+                    onSetSearching = vm::setSearching,
                     onOpenSettings = { showSettings = true },
                 )
                 Tab.VIEW -> ChecklistScreen(
                     loaded = loaded,
-                    onSetDone = vm::setItemDone,
+                    onInspectItem = vm::inspectItem,
                     onMarkAllNotDone = vm::markAllNotDone,
                 )
-                Tab.INFO -> InfoScreen(loaded = loaded)
+                Tab.INFO -> InfoScreen(
+                    selected = selectedItem,
+                    onToggleDone = vm::toggleSelectedItemDone,
+                )
                 Tab.SWITCHER -> SwitcherScreen(
                     openItems = openItems,
                     current = current,

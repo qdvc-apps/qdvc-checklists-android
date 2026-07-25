@@ -8,6 +8,7 @@ import kotlinx.coroutines.withContext
 import qdvc.checklists.android.app.model.ActionType
 import qdvc.checklists.android.app.model.Checklist
 import qdvc.checklists.android.app.model.DoneState
+import qdvc.checklists.android.app.model.LogRow
 import qdvc.checklists.android.app.model.Node
 import qdvc.checklists.android.app.model.NodeKind
 import qdvc.checklists.android.app.util.Csv
@@ -362,6 +363,39 @@ class ItemRepository(private val context: Context) {
         val checklistDocId: String,
         val itemDocId: String,
     )
+
+    // --- reading the action log for one item ------------------------------ //
+
+    /**
+     * Read all logged actions for a single item across every daily log file,
+     * most-recent first. Used by the item detail view.
+     */
+    suspend fun loadItemLog(
+        treeUri: Uri,
+        checklistDocId: String,
+        itemDocId: String,
+    ): List<LogRow> = withContext(Dispatchers.IO) {
+        val logsId = ensureLogsDir(treeUri) ?: return@withContext emptyList()
+        val files = childrenOf(treeUri, logsId).filter {
+            !isDir(it.mimeType) &&
+                it.displayName.startsWith("log-") &&
+                it.displayName.endsWith(".csv")
+        }
+        val rows = ArrayList<LogRow>()
+        for (f in files) {
+            val fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, f.docId)
+            val lines = readAllLines(fileUri)
+            for ((i, line) in lines.withIndex()) {
+                if (i == 0 || line.isBlank()) continue
+                val c = Csv.parseRow(line)
+                if (c.size < 7) continue
+                if (c[5] == checklistDocId && c[6] == itemDocId) {
+                    rows.add(LogRow(timestamp = c[0], action = c[1]))
+                }
+            }
+        }
+        rows.sortedByDescending { it.timestamp }
+    }
 
     // --- public mutations -------------------------------------------------- //
 

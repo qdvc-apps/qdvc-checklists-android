@@ -1,10 +1,10 @@
 package qdvc.checklists.android.app.ui.components
 
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -24,7 +24,7 @@ fun BottomBar(
         NavItem(current, Tab.HOME, "Home", Icons.Filled.Home, true, onSelect)
         NavItem(current, Tab.VIEW, "Checklist", Icons.Filled.Checklist, itemOpen, onSelect)
         NavItem(current, Tab.INFO, "Info", Icons.Filled.Info, itemOpen, onSelect)
-        NavItem(current, Tab.SWITCHER, "Open", Icons.AutoMirrored.Filled.List, true, onSelect)
+        NavItem(current, Tab.SWITCHER, "Jump", Icons.Outlined.Layers, true, onSelect)
     }
 }
 

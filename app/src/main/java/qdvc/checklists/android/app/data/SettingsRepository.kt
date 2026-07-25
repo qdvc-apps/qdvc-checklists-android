@@ -116,6 +116,7 @@ class SettingsRepository(private val context: Context) {
         private fun encodeOpenItem(o: OpenItem) = listOf(
             o.workspaceUri.toString(),
             o.checklistDocId,
+            o.checklistCid,
             o.checklistTitle,
             o.workspaceName,
         ).joinToString(FSEP)
@@ -123,12 +124,13 @@ class SettingsRepository(private val context: Context) {
         private fun decodeOpenItem(s: String): OpenItem? {
             if (s.isBlank()) return null
             val parts = s.split(FSEP)
-            if (parts.size < 4) return null
+            if (parts.size < 5) return null
             return OpenItem(
                 workspaceUri = Uri.parse(parts[0]),
                 checklistDocId = parts[1],
-                checklistTitle = parts[2],
-                workspaceName = parts[3],
+                checklistCid = parts[2],
+                checklistTitle = parts[3],
+                workspaceName = parts[4],
             )
         }
     }
