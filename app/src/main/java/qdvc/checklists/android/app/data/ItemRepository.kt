@@ -229,13 +229,17 @@ class ItemRepository(private val context: Context) {
 
     // --- done-state (logs/state.csv) -------------------------------------- //
 
-    /** Key uniquely identifying an item across the workspace. */
-    private fun stateKey(checklistDocId: String, itemDocId: String) =
-        "$checklistDocId\u0000$itemDocId"
+    // Identity in the log files is workspace-*relative*: the checklist's folder
+    // name and the item's folder name. SAF document ids are never written,
+    // because they embed the workspace's absolute location and name.
+
+    /** Key uniquely identifying an item across the workspace (folder-relative). */
+    private fun stateKey(checklistFolder: String, itemFolder: String) =
+        "$checklistFolder\u0000$itemFolder"
 
     /**
-     * Read the current done-state map for a workspace: (checklistDocId,
-     * itemDocId) -> DoneState. Missing file => empty map.
+     * Read the current done-state map for a workspace, keyed by
+     * "$checklistFolder\u0000$itemFolder". Missing file => empty map.
      */
     suspend fun loadDoneStates(treeUri: Uri): Map<String, DoneState> =
         withContext(Dispatchers.IO) {
@@ -252,11 +256,11 @@ class ItemRepository(private val context: Context) {
                 if (line.isBlank()) continue
                 val f = Csv.parseRow(line)
                 if (f.size < 5) continue
-                val checklistDocId = f[0]
-                val itemDocId = f[1]
+                val checklistFolder = f[0]
+                val itemFolder = f[1]
                 val done = f[3].trim().equals("true", ignoreCase = true)
                 val markedAt = f[4].takeIf { it.isNotBlank() }
-                map[stateKey(checklistDocId, itemDocId)] = DoneState(done, markedAt)
+                map[stateKey(checklistFolder, itemFolder)] = DoneState(done, markedAt)
             }
             map
         }
@@ -267,15 +271,15 @@ class ItemRepository(private val context: Context) {
         val sb = StringBuilder()
         sb.append(
             Csv.encodeRow(
-                listOf("checklist_doc_id", "item_doc_id", "item_title", "done", "marked_at")
+                listOf("checklist_folder", "item_folder", "item_title", "done", "marked_at")
             )
         ).append('\n')
         for (row in states.values) {
             sb.append(
                 Csv.encodeRow(
                     listOf(
-                        row.checklistDocId,
-                        row.itemDocId,
+                        row.checklistFolder,
+                        row.itemFolder,
                         row.itemTitle,
                         row.done.toString(),
                         row.markedAt ?: "",
@@ -287,8 +291,8 @@ class ItemRepository(private val context: Context) {
     }
 
     private data class StateRow(
-        val checklistDocId: String,
-        val itemDocId: String,
+        val checklistFolder: String,
+        val itemFolder: String,
         val itemTitle: String,
         val done: Boolean,
         val markedAt: String?,
@@ -307,13 +311,13 @@ class ItemRepository(private val context: Context) {
             val f = Csv.parseRow(line)
             if (f.size < 5) continue
             val row = StateRow(
-                checklistDocId = f[0],
-                itemDocId = f[1],
+                checklistFolder = f[0],
+                itemFolder = f[1],
                 itemTitle = f[2],
                 done = f[3].trim().equals("true", ignoreCase = true),
                 markedAt = f[4].takeIf { it.isNotBlank() },
             )
-            map[stateKey(row.checklistDocId, row.itemDocId)] = row
+            map[stateKey(row.checklistFolder, row.itemFolder)] = row
         }
         return map
     }
@@ -334,7 +338,7 @@ class ItemRepository(private val context: Context) {
                     Csv.encodeRow(
                         listOf(
                             "timestamp", "action", "checklist_id", "checklist_title",
-                            "item_title", "checklist_doc_id", "item_doc_id"
+                            "item_title", "checklist_folder", "item_folder"
                         )
                     )
                 )
@@ -344,7 +348,7 @@ class ItemRepository(private val context: Context) {
                     Csv.encodeRow(
                         listOf(
                             e.timestamp, e.action.label, e.checklistId, e.checklistTitle,
-                            e.itemTitle, e.checklistDocId, e.itemDocId
+                            e.itemTitle, e.checklistFolder, e.itemFolder
                         )
                     )
                 )
@@ -360,20 +364,21 @@ class ItemRepository(private val context: Context) {
         val checklistId: String,
         val checklistTitle: String,
         val itemTitle: String,
-        val checklistDocId: String,
-        val itemDocId: String,
+        val checklistFolder: String,
+        val itemFolder: String,
     )
 
     // --- reading the action log for one item ------------------------------ //
 
     /**
      * Read all logged actions for a single item across every daily log file,
-     * most-recent first. Used by the item detail view.
+     * most-recent first. Items are identified by their workspace-relative folder
+     * names. Used by the item detail view.
      */
     suspend fun loadItemLog(
         treeUri: Uri,
-        checklistDocId: String,
-        itemDocId: String,
+        checklistFolder: String,
+        itemFolder: String,
     ): List<LogRow> = withContext(Dispatchers.IO) {
         val logsId = ensureLogsDir(treeUri) ?: return@withContext emptyList()
         val files = childrenOf(treeUri, logsId).filter {
@@ -389,7 +394,7 @@ class ItemRepository(private val context: Context) {
                 if (i == 0 || line.isBlank()) continue
                 val c = Csv.parseRow(line)
                 if (c.size < 7) continue
-                if (c[5] == checklistDocId && c[6] == itemDocId) {
+                if (c[5] == checklistFolder && c[6] == itemFolder) {
                     rows.add(LogRow(timestamp = c[0], action = c[1]))
                 }
             }
@@ -413,9 +418,9 @@ class ItemRepository(private val context: Context) {
         val ts = ISO.format(now)
         val day = DAY.format(now)
         val states = currentStateRows(treeUri)
-        val key = stateKey(checklist.docId, item.docId)
+        val key = stateKey(checklist.folderName, item.folderName)
         val markedAt = if (done) ts else null
-        states[key] = StateRow(checklist.docId, item.docId, item.title, done, markedAt)
+        states[key] = StateRow(checklist.folderName, item.folderName, item.title, done, markedAt)
         writeDoneStates(treeUri, states)
         appendActionLog(
             treeUri,
@@ -427,8 +432,8 @@ class ItemRepository(private val context: Context) {
                     checklistId = checklist.cid,
                     checklistTitle = checklist.title,
                     itemTitle = item.title,
-                    checklistDocId = checklist.docId,
-                    itemDocId = item.docId,
+                    checklistFolder = checklist.folderName,
+                    itemFolder = item.folderName,
                 )
             )
         )
@@ -438,7 +443,7 @@ class ItemRepository(private val context: Context) {
     /**
      * Mark every item in a checklist as not-done in bulk. Each affected item
      * gets its own log row (mirroring individual unmarks) but with the distinct
-     * bulk action type. Returns the item docIds that were changed.
+     * bulk action type. Returns the item folder names that were changed.
      */
     suspend fun markAllNotDone(
         treeUri: Uri,
@@ -452,10 +457,10 @@ class ItemRepository(private val context: Context) {
         val changed = LinkedHashSet<String>()
         val logs = ArrayList<LogEntry>()
         for (item in items) {
-            val key = stateKey(checklist.docId, item.docId)
+            val key = stateKey(checklist.folderName, item.folderName)
             val wasDone = states[key]?.done == true
-            states[key] = StateRow(checklist.docId, item.docId, item.title, false, null)
-            if (wasDone) changed.add(item.docId)
+            states[key] = StateRow(checklist.folderName, item.folderName, item.title, false, null)
+            if (wasDone) changed.add(item.folderName)
             logs.add(
                 LogEntry(
                     timestamp = ts,
@@ -464,8 +469,8 @@ class ItemRepository(private val context: Context) {
                     checklistId = checklist.cid,
                     checklistTitle = checklist.title,
                     itemTitle = item.title,
-                    checklistDocId = checklist.docId,
-                    itemDocId = item.docId,
+                    checklistFolder = checklist.folderName,
+                    itemFolder = item.folderName,
                 )
             )
         }

@@ -306,7 +306,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     .getOrDefault(emptyMap())
                 val perItem = HashMap<String, DoneState>()
                 for (n in checklist.nodes) {
-                    states["${checklist.docId}\u0000${n.docId}"]?.let { perItem[n.docId] = it }
+                    // state map is keyed by workspace-relative folder names;
+                    // the UI map is keyed by docId for in-memory lookup only.
+                    states["${checklist.folderName}\u0000${n.folderName}"]
+                        ?.let { perItem[n.docId] = it }
                 }
                 _loaded.value = LoadedChecklist(checklist, perItem)
                 // If an item is being inspected, refresh its resolved state.
@@ -338,9 +341,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     ) {
         val states = runCatching { items.loadDoneStates(workspaceUri) }
             .getOrDefault(emptyMap())
-        val done = states["${checklist.docId}\u0000${item.docId}"]
+        val done = states["${checklist.folderName}\u0000${item.folderName}"]
         val log = runCatching {
-            items.loadItemLog(workspaceUri, checklist.docId, item.docId)
+            items.loadItemLog(workspaceUri, checklist.folderName, item.folderName)
         }.getOrDefault(emptyList())
         _selectedItem.value = SelectedItem(item, done, log)
     }

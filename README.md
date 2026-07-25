@@ -54,11 +54,16 @@ The app only **reads** these files; it never rewrites them.
 
 The app creates a `logs` folder at the workspace root if absent. Inside:
 
-- `state.csv` — the current done-state per item: `checklist_doc_id`,
-  `item_doc_id`, `item_title`, `done`, `marked_at`.
+- `state.csv` — the current done-state per item: `checklist_folder`,
+  `item_folder`, `item_title`, `done`, `marked_at`.
 - `log-YYYY-MM-DD.csv` — **one file per day**. Every mark/unmark action appends a
   row: `timestamp`, `action`, `checklist_id`, `checklist_title`, `item_title`,
-  `checklist_doc_id`, `item_doc_id`.
+  `checklist_folder`, `item_folder`.
+
+Items are identified only by their **workspace-relative folder names** (e.g.
+`BCL091-resupply-lunar-base` and `01-power-check`). The app never writes SAF
+document ids or absolute paths, so the log files never reveal where the
+workspace lives on the device or what the workspace folder itself is called.
 
 Action types are `marked_done`, `marked_not_done`, and — for the bulk button —
 `marked_not_done_bulk`. The bulk action writes one row per item (as if each were
