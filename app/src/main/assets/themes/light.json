@@ -1,0 +1,18 @@
+{
+  "id": "light",
+  "name": "Daylight",
+  "dark": false,
+  "colors": {
+    "background": "#FBFBF9",
+    "surface": "#FFFFFF",
+    "surfaceVariant": "#E9ECE7",
+    "onBackground": "#1A1C19",
+    "onSurfaceVariant": "#42493F",
+    "outline": "#C3C8BE",
+    "primary": "#1E6F5C",
+    "onPrimary": "#FFFFFF",
+    "secondary": "#4C6358",
+    "onSecondary": "#FFFFFF",
+    "error": "#BA1A1A"
+  }
+}

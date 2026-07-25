@@ -1,0 +1,18 @@
+{
+  "id": "oled",
+  "name": "OLED Black",
+  "dark": true,
+  "colors": {
+    "background": "#000000",
+    "surface": "#000000",
+    "surfaceVariant": "#1C201C",
+    "onBackground": "#E1E3DD",
+    "onSurfaceVariant": "#B7C1B4",
+    "outline": "#6E786D",
+    "primary": "#6FDBBE",
+    "onPrimary": "#00382B",
+    "secondary": "#9FC0AD",
+    "onSecondary": "#12251C",
+    "error": "#FFB4AB"
+  }
+}
