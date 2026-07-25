@@ -4,10 +4,12 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import qdvc.checklists.android.app.data.IndexRepository
 import qdvc.checklists.android.app.data.IndexStatus
 import qdvc.checklists.android.app.data.ItemRepository
@@ -235,7 +237,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun refreshIndexStatus(ws: Workspace) {
-        _indexStatus.value = index.statusFor(ws.treeUri)
+        // statusFor() performs a synchronous Room query, so it must run off the
+        // main thread. Update the flow once it returns.
+        viewModelScope.launch {
+            val status = withContext(Dispatchers.IO) {
+                runCatching { index.statusFor(ws.treeUri) }.getOrDefault(IndexStatus.NotBuilt)
+            }
+            _indexStatus.value = status
+        }
     }
 
     // --- workspace management --------------------------------------------- //

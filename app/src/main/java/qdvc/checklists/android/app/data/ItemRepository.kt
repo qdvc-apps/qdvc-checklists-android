@@ -178,13 +178,18 @@ class ItemRepository(private val context: Context) {
 
     // --- logs folder management ------------------------------------------- //
 
+    /** Find the workspace `logs` folder; null if it doesn't exist (read path). */
+    private fun findLogsDir(treeUri: Uri): String? {
+        val root = rootDocId(treeUri)
+        return childrenOf(treeUri, root).firstOrNull {
+            isDir(it.mimeType) && it.displayName == LOGS_DIR
+        }?.docId
+    }
+
     /** Ensure the workspace `logs` folder exists; return its document id. */
     private fun ensureLogsDir(treeUri: Uri): String? {
+        findLogsDir(treeUri)?.let { return it }
         val root = rootDocId(treeUri)
-        childrenOf(treeUri, root).firstOrNull {
-            isDir(it.mimeType) && it.displayName == LOGS_DIR
-        }?.let { return it.docId }
-
         return try {
             val parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, root)
             val created = DocumentsContract.createDocument(
@@ -276,9 +281,9 @@ class ItemRepository(private val context: Context) {
     suspend fun loadDoneStates(treeUri: Uri): Map<String, DoneState> =
         withContext(Dispatchers.IO) { replayDoneStates(treeUri) }
 
-    /** All daily log files (log-*.csv) in the logs dir. */
+    /** All daily log files (log-*.csv) in the logs dir; empty if no logs dir. */
     private fun dailyLogFiles(treeUri: Uri): List<ChildInfo> {
-        val logsId = ensureLogsDir(treeUri) ?: return emptyList()
+        val logsId = findLogsDir(treeUri) ?: return emptyList()
         return childrenOf(treeUri, logsId).filter {
             !isDir(it.mimeType) &&
                 it.displayName.startsWith("log-") &&
