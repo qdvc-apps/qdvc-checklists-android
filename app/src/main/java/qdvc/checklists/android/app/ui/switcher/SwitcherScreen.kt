@@ -156,6 +156,7 @@ private fun SwitcherRow(
                 OpenChevrons(
                     visible = isCurrent,
                     modifier = Modifier.padding(start = 8.dp, end = 8.dp),
+                    pointLeft = true,
                 )
                 Column(Modifier.weight(1f)) {
                     Text(
