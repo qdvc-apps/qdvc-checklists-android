@@ -1,15 +1,14 @@
 package qdvc.checklists.android.app.ui.checklist
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
@@ -42,6 +41,7 @@ fun InfoScreen(
     onToggleDone: () -> Unit,
 ) {
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
                 title = { Text("Item") },
@@ -81,8 +81,14 @@ fun InfoScreen(
                         }
                     }
 
-                    // Current status chip.
-                    StatusChip(done = done, markedAt = selected.done?.markedAt)
+                    // Current status as free-running text (no pill).
+                    Text(
+                        if (done) "Marked done " + DateFormatting.humanMarkedAt(selected.done?.markedAt)
+                        else "Not done",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(top = 16.dp),
+                    )
 
                     // Toggle button.
                     if (done) {
@@ -137,35 +143,6 @@ fun InfoScreen(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun StatusChip(done: Boolean, markedAt: String?) {
-    val bg = if (done) MaterialTheme.colorScheme.primaryContainer
-    else MaterialTheme.colorScheme.surfaceVariant
-    val fg = if (done) MaterialTheme.colorScheme.onPrimaryContainer
-    else MaterialTheme.colorScheme.onSurfaceVariant
-    Row(
-        Modifier
-            .padding(top = 16.dp)
-            .background(bg, RoundedCornerShape(8.dp))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Icon(
-            if (done) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
-            contentDescription = null,
-            tint = fg,
-        )
-        Text(
-            if (done) "Marked done " + DateFormatting.humanMarkedAt(markedAt)
-            else "Not done",
-            style = MaterialTheme.typography.bodyMedium,
-            color = fg,
-            fontWeight = FontWeight.Medium,
-        )
     }
 }
 

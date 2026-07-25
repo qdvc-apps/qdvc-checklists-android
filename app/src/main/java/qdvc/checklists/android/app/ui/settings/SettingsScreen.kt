@@ -34,7 +34,7 @@ import androidx.compose.ui.unit.dp
 import qdvc.checklists.android.app.data.ThemeMode
 import qdvc.checklists.android.app.data.ThemeSpec
 import qdvc.checklists.android.app.ui.components.ListRow
-import qdvc.checklists.android.app.ui.components.SlideNavHost
+import qdvc.checklists.android.app.ui.components.SlideNavHostFor
 
 private enum class SettingsPage(val depth: Int) {
     ROOT(0), APPEARANCE(1), LIGHT_THEME(1), DARK_THEME(1)
@@ -81,8 +81,12 @@ fun SettingsScreen(
             )
         },
     ) { padding ->
-        SlideNavHost(key = page.depth, modifier = Modifier.padding(padding).fillMaxSize()) {
-            when (page) {
+        SlideNavHostFor(
+            target = page,
+            depthOf = { it.depth },
+            modifier = Modifier.padding(padding).fillMaxSize(),
+        ) { p ->
+            when (p) {
                 SettingsPage.ROOT -> RootPage(
                     themeMode = themeMode,
                     lightName = lightThemes.firstOrNull { it.id == lightThemeId }?.name

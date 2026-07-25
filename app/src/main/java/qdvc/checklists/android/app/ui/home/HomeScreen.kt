@@ -3,8 +3,11 @@ package qdvc.checklists.android.app.ui.home
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -47,6 +50,7 @@ import qdvc.checklists.android.app.model.NodeKind
 import qdvc.checklists.android.app.model.Workspace
 import qdvc.checklists.android.app.ui.components.EmptyState
 import qdvc.checklists.android.app.ui.components.ListRow
+import qdvc.checklists.android.app.ui.components.OpenChevrons
 import qdvc.checklists.android.app.ui.components.SlideNavHost
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -56,6 +60,7 @@ fun HomeScreen(
     workspaces: List<Workspace>,
     allChecklists: List<Checklist>,
     searchResults: List<SearchHit>,
+    openChecklistDocId: String?,
     onAddWorkspace: () -> Unit,
     onRemoveWorkspace: (Workspace) -> Unit,
     onOpenWorkspace: (Workspace) -> Unit,
@@ -73,6 +78,7 @@ fun HomeScreen(
     }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
                 title = { Text(title) },
@@ -110,16 +116,16 @@ fun HomeScreen(
         SlideNavHost(
             key = browse.mode.depth,
             modifier = Modifier.padding(padding).fillMaxSize(),
-        ) {
-            when (browse.mode) {
-                BrowseMode.WORKSPACES -> WorkspaceList(
+        ) { depth ->
+            when (depth) {
+                BrowseMode.WORKSPACES.depth -> WorkspaceList(
                     workspaces, onAddWorkspace, onOpenWorkspace, onRemoveWorkspace
                 )
-                BrowseMode.ALL_CHECKLISTS ->
+                else ->
                     if (browse.searching) {
                         SearchSurface(searchResults, onSearch, onOpenHit)
                     } else {
-                        ChecklistList(allChecklists, onOpenChecklist)
+                        ChecklistList(allChecklists, openChecklistDocId, onOpenChecklist)
                     }
             }
         }
@@ -191,7 +197,11 @@ private fun WorkspaceList(
 }
 
 @Composable
-private fun ChecklistList(checklists: List<Checklist>, onOpen: (Checklist) -> Unit) {
+private fun ChecklistList(
+    checklists: List<Checklist>,
+    openDocId: String?,
+    onOpen: (Checklist) -> Unit,
+) {
     if (checklists.isEmpty()) {
         EmptyState("No checklists found in this workspace.")
         return
@@ -203,6 +213,7 @@ private fun ChecklistList(checklists: List<Checklist>, onOpen: (Checklist) -> Un
                 cid = c.cid,
                 title = c.title.ifBlank { c.cid },
                 itemCount = itemCount,
+                showChevron = c.docId == openDocId,
                 onClick = { onOpen(c) },
             )
         }
@@ -215,6 +226,7 @@ private fun ChecklistRow(
     cid: String,
     title: String,
     itemCount: Int?,
+    showChevron: Boolean,
     onClick: () -> Unit,
 ) {
     Column {
@@ -222,6 +234,7 @@ private fun ChecklistRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable { onClick() }
+                .height(IntrinsicSize.Min)
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -253,6 +266,7 @@ private fun ChecklistRow(
                     }
                 }
             }
+            OpenChevrons(visible = showChevron)
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
     }
@@ -285,6 +299,7 @@ private fun SearchSurface(
                         cid = hit.cid,
                         title = hit.title.ifBlank { hit.cid },
                         itemCount = null,
+                        showChevron = false,
                         onClick = { onOpen(hit) },
                     )
                 }

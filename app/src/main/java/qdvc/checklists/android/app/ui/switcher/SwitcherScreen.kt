@@ -7,25 +7,22 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowDownward
-import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -46,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import qdvc.checklists.android.app.data.SettingsRepository
 import qdvc.checklists.android.app.model.OpenItem
 import qdvc.checklists.android.app.ui.components.EmptyState
+import qdvc.checklists.android.app.ui.components.OpenChevrons
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -54,31 +52,22 @@ fun SwitcherScreen(
     current: OpenItem?,
     onSelect: (OpenItem) -> Unit,
     onClose: (OpenItem) -> Unit,
-    onMove: (Int, Int) -> Unit,
 ) {
-    var reordering by remember { mutableStateOf(false) }
+    // The jump list is always sorted by checklist ID.
+    val sorted = remember(openItems) { openItems.sortedBy { it.checklistCid } }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
                 title = { Text("Open checklists") },
-                actions = {
-                    if (openItems.isNotEmpty()) {
-                        IconButton(onClick = { reordering = !reordering }) {
-                            Icon(
-                                if (reordering) Icons.Filled.Check else Icons.Filled.SwapVert,
-                                contentDescription = if (reordering) "Done" else "Reorder",
-                            )
-                        }
-                    }
-                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface
                 ),
             )
         },
     ) { padding ->
-        if (openItems.isEmpty()) {
+        if (sorted.isEmpty()) {
             Column(Modifier.padding(padding).fillMaxSize()) {
                 EmptyState("Nothing open yet. Open a checklist from Home.")
             }
@@ -86,18 +75,12 @@ fun SwitcherScreen(
         }
         val currentKey = current?.let { SettingsRepository.openItemKey(it) }
         LazyColumn(Modifier.padding(padding).fillMaxSize()) {
-            items(openItems, key = { SettingsRepository.openItemKey(it) }) { item ->
-                val index = openItems.indexOf(item)
+            items(sorted, key = { SettingsRepository.openItemKey(it) }) { item ->
                 SwitcherRow(
                     item = item,
                     isCurrent = SettingsRepository.openItemKey(item) == currentKey,
-                    reordering = reordering,
-                    canMoveUp = index > 0,
-                    canMoveDown = index < openItems.size - 1,
                     onSelect = { onSelect(item) },
                     onClose = { onClose(item) },
-                    onMoveUp = { onMove(index, index - 1) },
-                    onMoveDown = { onMove(index, index + 1) },
                 )
             }
         }
@@ -108,13 +91,8 @@ fun SwitcherScreen(
 private fun SwitcherRow(
     item: OpenItem,
     isCurrent: Boolean,
-    reordering: Boolean,
-    canMoveUp: Boolean,
-    canMoveDown: Boolean,
     onSelect: () -> Unit,
     onClose: () -> Unit,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit,
 ) {
     val revealWidthDp = 96.dp
     // dp→px conversion (B6): translate by pixels, not the dp number.
@@ -152,68 +130,50 @@ private fun SwitcherRow(
         Column(
             Modifier
                 .fillMaxWidth()
-                .graphicsLayer { translationX = if (reordering) 0f else animated }
+                .graphicsLayer { translationX = animated }
                 .background(MaterialTheme.colorScheme.surface)
-                .then(
-                    if (reordering) Modifier
-                    else Modifier.pointerInput(item) {
-                        detectHorizontalDragGestures(
-                            onDragEnd = {
-                                offset = if (offset < -revealPx / 2) {
-                                    onClose(); 0f
-                                } else 0f
-                            },
-                            onHorizontalDrag = { _, dragAmount ->
-                                offset = (offset + dragAmount).coerceIn(-revealPx, 0f)
-                            },
-                        )
-                    }
-                )
-                .clickable(enabled = !reordering) { onSelect() }
+                .pointerInput(item) {
+                    detectHorizontalDragGestures(
+                        onDragEnd = {
+                            offset = if (offset < -revealPx / 2) {
+                                onClose(); 0f
+                            } else 0f
+                        },
+                        onHorizontalDrag = { _, dragAmount ->
+                            offset = (offset + dragAmount).coerceIn(-revealPx, 0f)
+                        },
+                    )
+                }
+                .clickable { onSelect() }
         ) {
             Row(
                 Modifier.fillMaxWidth().heightIn(min = 72.dp)
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                    .height(IntrinsicSize.Min)
+                    .padding(end = 16.dp, top = 10.dp, bottom = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                // Left-hand chevron indicator (blank space reserved when absent).
+                OpenChevrons(
+                    visible = isCurrent,
+                    modifier = Modifier.padding(start = 8.dp, end = 8.dp),
+                )
                 Column(Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (isCurrent) {
-                            Box(
-                                Modifier
-                                    .size(8.dp)
-                                    .background(
-                                        MaterialTheme.colorScheme.primary,
-                                        androidx.compose.foundation.shape.CircleShape,
-                                    )
-                            )
-                            androidx.compose.foundation.layout.Spacer(Modifier.width(8.dp))
-                        }
-                        Text(
-                            item.checklistCid,
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                    }
                     Text(
-                        item.checklistTitle,
-                        style = MaterialTheme.typography.bodyMedium,
+                        item.checklistCid,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                     Text(
-                        item.workspaceName,
-                        style = MaterialTheme.typography.bodySmall,
+                        item.checklistTitle,
+                        style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                }
-                if (reordering) {
-                    IconButton(onClick = onMoveUp, enabled = canMoveUp) {
-                        Icon(Icons.Filled.ArrowUpward, contentDescription = "Move up")
-                    }
-                    IconButton(onClick = onMoveDown, enabled = canMoveDown) {
-                        Icon(Icons.Filled.ArrowDownward, contentDescription = "Move down")
-                    }
+                    Text(
+                        item.workspaceName,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))

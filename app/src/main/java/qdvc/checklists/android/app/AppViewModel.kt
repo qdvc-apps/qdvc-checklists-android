@@ -285,15 +285,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         persist()
     }
 
-    fun moveOpenItem(from: Int, to: Int) {
-        val list = _openItems.value.toMutableList()
-        if (from !in list.indices || to !in list.indices) return
-        val e = list.removeAt(from)
-        list.add(to, e)
-        _openItems.value = list
-        persist()
-    }
-
     private fun persist() = viewModelScope.launch {
         settings.persistSession(_openItems.value, _currentItem.value)
     }

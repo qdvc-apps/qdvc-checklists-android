@@ -11,6 +11,15 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -129,42 +138,58 @@ private fun AppScaffold(vm: AppViewModel) {
         contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(bottom = padding.calculateBottomPadding())) {
-            when (tab) {
-                Tab.HOME -> HomeScreen(
-                    browse = browse,
-                    workspaces = workspaces,
-                    allChecklists = allChecklists,
-                    searchResults = searchResults,
-                    onAddWorkspace = { picker.launch(null) },
-                    onRemoveWorkspace = vm::removeWorkspace,
-                    onOpenWorkspace = vm::openWorkspace,
-                    onBack = { vm.browseUp() },
-                    onOpenChecklist = { c ->
-                        browse.workspace?.let { vm.openChecklist(it, c) }
-                    },
-                    onOpenHit = { hit ->
-                        browse.workspace?.let { vm.openByHit(it, hit) }
-                    },
-                    onSearch = vm::runSearch,
-                    onSetSearching = vm::setSearching,
-                    onOpenSettings = { showSettings = true },
-                )
-                Tab.VIEW -> ChecklistScreen(
-                    loaded = loaded,
-                    onInspectItem = vm::inspectItem,
-                    onMarkAllNotDone = vm::markAllNotDone,
-                )
-                Tab.INFO -> InfoScreen(
-                    selected = selectedItem,
-                    onToggleDone = vm::toggleSelectedItemDone,
-                )
-                Tab.SWITCHER -> SwitcherScreen(
-                    openItems = openItems,
-                    current = current,
-                    onSelect = vm::selectOpenItem,
-                    onClose = vm::closeOpenItem,
-                    onMove = vm::moveOpenItem,
-                )
+            AnimatedContent(
+                targetState = tab,
+                transitionSpec = {
+                    // Card-shuffle: the incoming screen elevates and scales up to
+                    // fill while the outgoing one recedes and fades aside.
+                    val enter = scaleIn(initialScale = 0.92f, animationSpec = tween(280)) +
+                        fadeIn(animationSpec = tween(280))
+                    val exit = slideOutHorizontally(animationSpec = tween(220)) { -it / 6 } +
+                        fadeOut(animationSpec = tween(220))
+                    (enter togetherWith exit)
+                        .using(SizeTransform(clip = false) { _, _ -> snap() })
+                },
+                label = "tab-shuffle",
+            ) { shownTab ->
+                when (shownTab) {
+                    Tab.HOME -> HomeScreen(
+                        browse = browse,
+                        workspaces = workspaces,
+                        allChecklists = allChecklists,
+                        searchResults = searchResults,
+                        openChecklistDocId = current?.checklistDocId,
+                        onAddWorkspace = { picker.launch(null) },
+                        onRemoveWorkspace = vm::removeWorkspace,
+                        onOpenWorkspace = vm::openWorkspace,
+                        onBack = { vm.browseUp() },
+                        onOpenChecklist = { c ->
+                            browse.workspace?.let { vm.openChecklist(it, c) }
+                        },
+                        onOpenHit = { hit ->
+                            browse.workspace?.let { vm.openByHit(it, hit) }
+                        },
+                        onSearch = vm::runSearch,
+                        onSetSearching = vm::setSearching,
+                        onOpenSettings = { showSettings = true },
+                    )
+                    Tab.VIEW -> ChecklistScreen(
+                        loaded = loaded,
+                        selectedItemDocId = selectedItem?.item?.docId,
+                        onInspectItem = vm::inspectItem,
+                        onMarkAllNotDone = vm::markAllNotDone,
+                    )
+                    Tab.INFO -> InfoScreen(
+                        selected = selectedItem,
+                        onToggleDone = vm::toggleSelectedItemDone,
+                    )
+                    Tab.SWITCHER -> SwitcherScreen(
+                        openItems = openItems,
+                        current = current,
+                        onSelect = vm::selectOpenItem,
+                        onClose = vm::closeOpenItem,
+                    )
+                }
             }
         }
     }

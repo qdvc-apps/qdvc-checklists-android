@@ -46,3 +46,34 @@ fun SlideNavHost(
         content = { content(it) },
     )
 }
+
+/**
+ * Generic variant: animates between arbitrary [T] states, deriving slide
+ * direction from [depthOf]. The body is rendered for the *animating* state,
+ * so outgoing and incoming frames show the correct (different) content.
+ */
+@Composable
+fun <T> SlideNavHostFor(
+    target: T,
+    depthOf: (T) -> Int,
+    modifier: Modifier = Modifier,
+    content: @Composable (T) -> Unit,
+) {
+    AnimatedContent(
+        targetState = target,
+        modifier = modifier,
+        transitionSpec = {
+            val deeper = depthOf(targetState) > depthOf(initialState)
+            val transform: ContentTransform = if (deeper) {
+                (slideInHorizontally(tween(280)) { it } + fadeIn()) togetherWith
+                    (slideOutHorizontally(tween(280)) { -it / 4 } + fadeOut())
+            } else {
+                (slideInHorizontally(tween(280)) { -it / 4 } + fadeIn()) togetherWith
+                    (slideOutHorizontally(tween(280)) { it } + fadeOut())
+            }
+            transform.using(SizeTransform(clip = false) { _, _ -> snap() })
+        },
+        label = "slide-nav",
+        content = { content(it) },
+    )
+}

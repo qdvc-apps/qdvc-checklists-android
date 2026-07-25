@@ -4,8 +4,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -40,17 +43,20 @@ import qdvc.checklists.android.app.LoadedChecklist
 import qdvc.checklists.android.app.model.Node
 import qdvc.checklists.android.app.model.NodeKind
 import qdvc.checklists.android.app.ui.components.EmptyState
+import qdvc.checklists.android.app.ui.components.OpenChevrons
 import qdvc.checklists.android.app.util.DateFormatting
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChecklistScreen(
     loaded: LoadedChecklist?,
+    selectedItemDocId: String?,
     onInspectItem: (Node) -> Unit,
     onMarkAllNotDone: () -> Unit,
 ) {
     if (loaded == null) {
         Scaffold(
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
             topBar = {
                 TopAppBar(
                     title = { Text("Checklist") },
@@ -74,6 +80,7 @@ fun ChecklistScreen(
     val doneCount = items.count { loaded.done[it.docId]?.done == true }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
                 title = { Text(checklist.title.ifBlank { checklist.cid }) },
@@ -106,6 +113,7 @@ fun ChecklistScreen(
                             node = node,
                             done = state?.done == true,
                             markedAt = state?.markedAt,
+                            showChevron = node.docId == selectedItemDocId,
                             onTap = { onInspectItem(node) },
                         )
                     }
@@ -152,7 +160,7 @@ private fun InfoZone(
     ) {
         Text(
             cid,
-            style = MaterialTheme.typography.labelLarge,
+            style = MaterialTheme.typography.titleLarge,
             color = MaterialTheme.colorScheme.primary,
             fontWeight = FontWeight.Bold,
         )
@@ -209,6 +217,7 @@ private fun ItemRow(
     node: Node,
     done: Boolean,
     markedAt: String?,
+    showChevron: Boolean,
     onTap: () -> Unit,
 ) {
     Column {
@@ -216,6 +225,7 @@ private fun ItemRow(
             Modifier
                 .fillMaxWidth()
                 .clickable { onTap() }
+                .height(IntrinsicSize.Min)
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -231,7 +241,7 @@ private fun ItemRow(
                     node.title,
                     style = MaterialTheme.typography.bodyLarge,
                     textDecoration = if (done) TextDecoration.LineThrough else null,
-                    color = if (done) MaterialTheme.colorScheme.onSurfaceVariant
+                    color = if (done) androidx.compose.ui.graphics.Color(0xFF7F7F7F)
                     else MaterialTheme.colorScheme.onSurface,
                 )
                 // Second line: the completion time when done, otherwise nothing.
@@ -239,10 +249,11 @@ private fun ItemRow(
                     Text(
                         "Done " + DateFormatting.humanMarkedAt(markedAt),
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = androidx.compose.ui.graphics.Color(0xFF7F7F7F),
                     )
                 }
             }
+            OpenChevrons(visible = showChevron)
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
     }
