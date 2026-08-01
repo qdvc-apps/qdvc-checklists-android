@@ -489,7 +489,7 @@ private fun ProgressBar(doneCount: Int, skippedCount: Int, total: Int) {
                 Modifier
                     .weight(skipped.toFloat())
                     .fillMaxHeight()
-                    .background(MaterialTheme.colorScheme.onSurfaceVariant)
+                    .background(MutedGrey)
             )
         }
         if (remaining > 0) {
@@ -526,9 +526,26 @@ private fun HeadingRow(
     }
 }
 
-private val MutedText = Color(0xFF7F7F7F)
+/**
+ * The one muted grey used for every settled element: done and skipped row text,
+ * the skipped disc, and the skipped segment of the progress bar. Deliberately a
+ * fixed 50% grey rather than a theme colour, so it reads the same everywhere.
+ */
+private val MutedGrey = Color(0xFF7F7F7F)
+
+/** Footprint of a state marker — matches the 24dp box a Material [Icon] occupies. */
 private val StateIconSize = 24.dp
-private val SkippedGlyphSize = 15.dp
+
+/**
+ * Diameter of the disc *drawn inside* that footprint. Material icons inset their
+ * glyph: `CheckCircle` is a circle of radius 10 on a 24-unit grid, so its visible
+ * disc is 20dp with 2dp of margin. A composed disc must match that rather than
+ * filling the whole 24dp box, or it ends up wider than the tick beside it.
+ */
+private val StateDiscSize = 20.dp
+
+/** Sized so the fast-forward glyph carries about the same visual weight as the tick. */
+private val SkippedGlyphSize = 14.dp
 
 /**
  * The leading state marker on an item row.
@@ -550,18 +567,27 @@ private fun ItemStateIcon(state: ItemState, modifier: Modifier = Modifier) {
             modifier = modifier.size(StateIconSize),
         )
         ItemState.SKIPPED -> Box(
-            modifier = modifier
-                .size(StateIconSize)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.onSurfaceVariant),
+            // Outer box matches an Icon's footprint so all three markers line up;
+            // the disc inside matches the diameter Material actually draws.
+            modifier = modifier.size(StateIconSize),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(
-                Icons.Filled.FastForward,
-                contentDescription = "Skipped",
-                tint = MaterialTheme.colorScheme.background,
-                modifier = Modifier.size(SkippedGlyphSize),
-            )
+            Box(
+                modifier = Modifier
+                    .size(StateDiscSize)
+                    .clip(CircleShape)
+                    .background(MutedGrey),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.FastForward,
+                    contentDescription = "Skipped",
+                    // The cut-out has to be the row's own background, or it stops
+                    // looking punched through the way the tick does.
+                    tint = MaterialTheme.colorScheme.background,
+                    modifier = Modifier.size(SkippedGlyphSize),
+                )
+            }
         }
         ItemState.NOT_DONE -> Icon(
             Icons.Filled.RadioButtonUnchecked,
@@ -596,7 +622,7 @@ private fun ItemRow(
                     node.title,
                     style = MaterialTheme.typography.bodyLarge,
                     textDecoration = if (resolved) TextDecoration.LineThrough else null,
-                    color = if (resolved) MutedText else MaterialTheme.colorScheme.onSurface,
+                    color = if (resolved) MutedGrey else MaterialTheme.colorScheme.onSurface,
                 )
                 // Second line: when it was settled, for done and skipped alike.
                 if (resolved) {
@@ -604,7 +630,7 @@ private fun ItemRow(
                     Text(
                         verb + " " + DateFormatting.humanMarkedAt(state?.markedAt),
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MutedText,
+                        color = MutedGrey,
                     )
                 }
             }
