@@ -153,6 +153,13 @@ data class LogLine(val timestamp: String, val action: String)
 /** Enough of a checklist to recognise it again across a restart or a rename. */
 data class ChecklistIdentity(val docId: String, val cid: String, val title: String)
 
+/**
+ * When any item in a checklist was last marked done or skipped. Derived from the
+ * logged events, so unmarking an item afterwards does not erase the fact that it
+ * was worked on.
+ */
+data class ChecklistActivity(val checklistFolder: String, val latest: String)
+
 @Dao
 abstract class IndexDao {
 
@@ -221,8 +228,19 @@ abstract class IndexDao {
     @Query("SELECT docId, cid, title FROM checklists WHERE workspaceUri = :ws")
     abstract suspend fun identities(ws: String): List<ChecklistIdentity>
 
-    @Query("SELECT * FROM nodes WHERE workspaceUri = :ws")
-    abstract fun observeAllNodes(ws: String): Flow<List<NodeEntity>>
+    /**
+     * Latest mark per checklist. [actions] is passed in rather than written into
+     * the SQL so the wire strings stay owned by `ActionType`.
+     */
+    @Query(
+        "SELECT checklistFolder AS checklistFolder, MAX(timestamp) AS latest " +
+            "FROM log_entries WHERE workspaceUri = :ws AND itemFolder != '' " +
+            "AND action IN (:actions) GROUP BY checklistFolder"
+    )
+    abstract fun observeChecklistActivity(
+        ws: String,
+        actions: List<String>,
+    ): Flow<List<ChecklistActivity>>
 
     @Query("SELECT * FROM checklists WHERE workspaceUri = :ws AND docId = :docId LIMIT 1")
     abstract fun observeChecklist(ws: String, docId: String): Flow<ChecklistEntity?>

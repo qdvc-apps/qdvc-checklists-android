@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import qdvc.checklists.android.app.data.ChecklistSummary
 import qdvc.checklists.android.app.data.IndexStatus
 import qdvc.checklists.android.app.data.ItemRepository
 import qdvc.checklists.android.app.data.SettingsRepository
@@ -170,8 +171,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearMessage() { _message.value = null }
 
-    private val _allChecklists = MutableStateFlow<List<Checklist>>(emptyList())
-    val allChecklists: StateFlow<List<Checklist>> = _allChecklists.asStateFlow()
+    private val _allChecklists = MutableStateFlow<List<ChecklistSummary>>(emptyList())
+    val allChecklists: StateFlow<List<ChecklistSummary>> = _allChecklists.asStateFlow()
 
     private val _searchResults = MutableStateFlow<List<SearchHit>>(emptyList())
     val searchResults: StateFlow<List<SearchHit>> = _searchResults.asStateFlow()
@@ -482,7 +483,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- checklist opening & switching ------------------------------------ //
 
-    fun openChecklist(ws: Workspace, checklist: Checklist) {
+    fun openChecklist(ws: Workspace, checklist: ChecklistSummary) {
         val open = OpenItem(
             workspaceUri = ws.treeUri,
             checklistDocId = checklist.docId,

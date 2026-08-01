@@ -7,7 +7,11 @@ import org.junit.Test
 import qdvc.checklists.android.app.data.ItemRepository
 import qdvc.checklists.android.app.data.WorkspaceStore
 import qdvc.checklists.android.app.model.ItemState
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Locale
 import qdvc.checklists.android.app.util.Csv
+import qdvc.checklists.android.app.util.DateFormatting
 import qdvc.checklists.android.app.util.Markdown
 import qdvc.checklists.android.app.util.Naming
 import qdvc.checklists.android.app.util.movedItem
@@ -304,5 +308,150 @@ class DoneStateFoldTest {
                 "01-a",
             ),
         )
+    }
+}
+
+/** Naming recent dates "today" and "yesterday" while keeping the time. */
+class DateFormattingTest {
+
+    private val iso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US)
+
+    /** An instant on a given local day, as both epoch millis and an ISO string. */
+    private fun at(year: Int, month: Int, day: Int, hour: Int, minute: Int): Pair<Long, String> {
+        val cal = Calendar.getInstance()
+        cal.set(year, month - 1, day, hour, minute, 0)
+        cal.set(Calendar.MILLISECOND, 0)
+        return cal.timeInMillis to iso.format(cal.time)
+    }
+
+    @Test
+    fun namesTodayAndKeepsTheTime() {
+        val (now, _) = at(2026, 7, 3, 18, 30)
+        val (_, marked) = at(2026, 7, 3, 12, 15)
+        assertEquals("today at 12:15", DateFormatting.humanMarkedAt(marked, now))
+        assertEquals("today at 12:15", DateFormatting.humanTimestamp(marked, now))
+    }
+
+    @Test
+    fun namesYesterdayAndKeepsTheTime() {
+        val (now, _) = at(2026, 7, 3, 9, 0)
+        val (_, marked) = at(2026, 7, 2, 23, 55)
+        assertEquals("yesterday at 23:55", DateFormatting.humanMarkedAt(marked, now))
+        assertEquals("yesterday at 23:55", DateFormatting.humanTimestamp(marked, now))
+    }
+
+    @Test
+    fun spellsOutAnythingOlder() {
+        val (now, _) = at(2026, 7, 3, 9, 0)
+        val (_, marked) = at(2026, 7, 1, 14, 5)
+        // humanMarkedAt keeps its preposition; humanTimestamp has none to keep.
+        assertEquals("on 1 Jul 2026 at 14:05", DateFormatting.humanMarkedAt(marked, now))
+        assertEquals("1 Jul 2026 at 14:05", DateFormatting.humanTimestamp(marked, now))
+    }
+
+    @Test
+    fun dropsThePrepositionForNamedDaysOnly() {
+        val (now, _) = at(2026, 7, 3, 18, 0)
+        val (_, today) = at(2026, 7, 3, 8, 0)
+        val (_, older) = at(2026, 6, 30, 8, 0)
+        assertTrue(DateFormatting.humanMarkedAt(today, now).startsWith("today"))
+        assertTrue(DateFormatting.humanMarkedAt(older, now).startsWith("on "))
+    }
+
+    @Test
+    fun aMinuteBeforeMidnightIsYesterdayAMinuteAfter() {
+        val (justBefore, beforeIso) = at(2026, 7, 2, 23, 59)
+        val (justAfter, _) = at(2026, 7, 3, 0, 1)
+        // Same instant, judged from either side of midnight.
+        assertEquals("today at 23:59", DateFormatting.humanMarkedAt(beforeIso, justBefore))
+        assertEquals("yesterday at 23:59", DateFormatting.humanMarkedAt(beforeIso, justAfter))
+    }
+
+    @Test
+    fun elapsedHoursDoNotDecideTheDay() {
+        // Two hours apart, but either side of midnight, so not the same day.
+        val (now, _) = at(2026, 7, 3, 1, 0)
+        val (_, marked) = at(2026, 7, 2, 23, 0)
+        assertEquals("yesterday at 23:00", DateFormatting.humanMarkedAt(marked, now))
+        // Twenty-three hours apart, but the same calendar day.
+        val (sameDayNow, _) = at(2026, 7, 3, 23, 30)
+        val (_, sameDayMarked) = at(2026, 7, 3, 0, 30)
+        assertEquals("today at 00:30", DateFormatting.humanMarkedAt(sameDayMarked, sameDayNow))
+    }
+
+    @Test
+    fun futureTimestampsAreNotNamed() {
+        val (now, _) = at(2026, 7, 3, 9, 0)
+        val (_, tomorrow) = at(2026, 7, 4, 9, 0)
+        assertEquals("on 4 Jul 2026 at 09:00", DateFormatting.humanMarkedAt(tomorrow, now))
+    }
+
+    @Test
+    fun handlesMissingAndMalformedInput() {
+        val (now, _) = at(2026, 7, 3, 9, 0)
+        assertEquals("at an unknown time", DateFormatting.humanMarkedAt(null, now))
+        assertEquals("at an unknown time", DateFormatting.humanMarkedAt("  ", now))
+        assertEquals("unknown time", DateFormatting.humanTimestamp(null, now))
+        assertEquals("not a timestamp", DateFormatting.humanTimestamp("not a timestamp", now))
+    }
+
+    @Test
+    fun relativeDayClassifies() {
+        val (now, _) = at(2026, 7, 3, 12, 0)
+        val (today, _) = at(2026, 7, 3, 0, 0)
+        val (yesterday, _) = at(2026, 7, 2, 12, 0)
+        val (older, _) = at(2026, 7, 1, 12, 0)
+        assertEquals(DateFormatting.RelativeDay.TODAY, DateFormatting.relativeDay(today, now))
+        assertEquals(DateFormatting.RelativeDay.YESTERDAY, DateFormatting.relativeDay(yesterday, now))
+        assertEquals(DateFormatting.RelativeDay.OTHER, DateFormatting.relativeDay(older, now))
+    }
+}
+
+/** The date-only form used on the browse list, including "never". */
+class DateOnlyTest {
+
+    private val iso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US)
+
+    private fun at(year: Int, month: Int, day: Int, hour: Int, minute: Int): Pair<Long, String> {
+        val cal = Calendar.getInstance()
+        cal.set(year, month - 1, day, hour, minute, 0)
+        cal.set(Calendar.MILLISECOND, 0)
+        return cal.timeInMillis to iso.format(cal.time)
+    }
+
+    @Test
+    fun namesTodayWithoutATime() {
+        val (now, _) = at(2026, 7, 3, 18, 0)
+        val (_, marked) = at(2026, 7, 3, 12, 15)
+        assertEquals("today", DateFormatting.humanDateOnly(marked, now))
+    }
+
+    @Test
+    fun namesYesterdayWithoutATime() {
+        val (now, _) = at(2026, 7, 3, 9, 0)
+        val (_, marked) = at(2026, 7, 2, 23, 55)
+        assertEquals("yesterday", DateFormatting.humanDateOnly(marked, now))
+    }
+
+    @Test
+    fun spellsOutOlderDatesWithoutATime() {
+        val (now, _) = at(2026, 7, 3, 9, 0)
+        val (_, marked) = at(2026, 7, 1, 14, 5)
+        assertEquals("1 Jul 2026", DateFormatting.humanDateOnly(marked, now))
+    }
+
+    @Test
+    fun readsNeverWhenNothingHasBeenMarked() {
+        val (now, _) = at(2026, 7, 3, 9, 0)
+        assertEquals("never", DateFormatting.humanDateOnly(null, now))
+        assertEquals("never", DateFormatting.humanDateOnly("", now))
+        assertEquals("never", DateFormatting.humanDateOnly("   ", now))
+    }
+
+    @Test
+    fun malformedTimestampsAreNotReportedAsNever() {
+        // Something was logged; we just can't read it. Saying "never" would lie.
+        val (now, _) = at(2026, 7, 3, 9, 0)
+        assertEquals("garbage", DateFormatting.humanDateOnly("garbage", now))
     }
 }

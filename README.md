@@ -19,7 +19,11 @@ checklists, headings, and items. Completion state and an audit trail live in a
   bar**, and a **Mark all items not done** button — above the ordered list of
   headings and items.
 - Each item shows a tick when done, with greyed-out strikethrough text and, on
-  its second line, the date and time it was marked done.
+  its second line, when it was marked. A date inside the last two days is named
+  rather than spelled out — "Done today at 12:15", "Skipped yesterday at 23:55" —
+  while the time is always kept. "Today" means the calendar day in the device's
+  time zone, so something ticked at 23:55 reads as "yesterday" minutes later
+  rather than staying "today" for a full day.
 - An item can also be **skipped** — passed over deliberately rather than
   completed. A skipped item reads like a done one (greyed, struck through, with
   the time it was settled) but carries a muted fast-forward icon instead of an
@@ -52,9 +56,13 @@ checklists, headings, and items. Completion state and an audit trail live in a
 
 ## The four tabs
 
-1. **Home** — workspaces, then straight into that workspace's checklists. The
-   workspaces toolbar menu holds Settings; the checklists toolbar menu holds
-   Search, Index status, and New checklist.
+1. **Home** — workspaces, then straight into that workspace's checklists. Each
+   checklist's second line gives its ID and when it was last worked on:
+   `BCL091 · upd. today`, `BCL091 · upd. 3 Jul 2026`, or `BCL091 · upd. never`.
+   That comes from the logged `marked_done` and `marked_skipped` events, so
+   unmarking an item afterwards doesn't erase the fact that it was worked on, and
+   `marked_not_done` never counts. The workspaces toolbar menu holds Settings; the
+   checklists toolbar menu holds Search, Index status, and New checklist.
 2. **Checklist** — toolbar title is the checklist ID; the info zone shows the
    name, description, progress, and bulk-clear, above the tickable list. The
    toolbar menu edits the checklist, adds an item/heading, or rearranges. Tapping

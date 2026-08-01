@@ -55,8 +55,7 @@ import qdvc.checklists.android.app.BrowseState
 import qdvc.checklists.android.app.ChecklistsSurface
 import qdvc.checklists.android.app.data.IndexStatus
 import qdvc.checklists.android.app.data.index.SearchHit
-import qdvc.checklists.android.app.model.Checklist
-import qdvc.checklists.android.app.model.NodeKind
+import qdvc.checklists.android.app.data.ChecklistSummary
 import qdvc.checklists.android.app.model.Workspace
 import qdvc.checklists.android.app.ui.components.EmptyState
 import qdvc.checklists.android.app.ui.components.ListRow
@@ -75,14 +74,14 @@ fun HomeScreen(
     workspacesListState: LazyListState,
     /** Hoisted per workspace, for the same reason. */
     checklistsListState: LazyListState,
-    allChecklists: List<Checklist>,
+    allChecklists: List<ChecklistSummary>,
     searchResults: List<SearchHit>,
     openChecklistDocId: String?,
     onAddWorkspace: () -> Unit,
     onRemoveWorkspace: (Workspace) -> Unit,
     onOpenWorkspace: (Workspace) -> Unit,
     onBack: () -> Unit,
-    onOpenChecklist: (Checklist) -> Unit,
+    onOpenChecklist: (ChecklistSummary) -> Unit,
     onOpenHit: (SearchHit) -> Unit,
     onSearch: (String) -> Unit,
     onSetSearching: (Boolean) -> Unit,
@@ -285,10 +284,10 @@ private fun WorkspaceList(
 
 @Composable
 private fun ChecklistList(
-    checklists: List<Checklist>,
+    checklists: List<ChecklistSummary>,
     listState: LazyListState,
     openDocId: String?,
-    onOpen: (Checklist) -> Unit,
+    onOpen: (ChecklistSummary) -> Unit,
 ) {
     if (checklists.isEmpty()) {
         EmptyState("No checklists found in this workspace.")
@@ -297,11 +296,12 @@ private fun ChecklistList(
     val haptics = rememberHaptics()
     LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
         items(checklists, key = { it.docId }) { c ->
-            val itemCount = c.nodes.count { it.kind == NodeKind.ITEM }
             ChecklistRow(
                 cid = c.cid,
                 title = c.title.ifBlank { c.cid },
-                itemCount = itemCount,
+                // When any of its items was last ticked or skipped — the most
+                // useful thing to know about a checklist you're choosing between.
+                detail = "upd. " + DateFormatting.humanDateOnly(c.lastMarkedAt),
                 showChevron = c.docId == openDocId,
                 onClick = { haptics.tap(); onOpen(c) },
             )
@@ -314,7 +314,8 @@ private fun ChecklistList(
 private fun ChecklistRow(
     cid: String,
     title: String,
-    itemCount: Int?,
+    /** Second-line detail shown after the ID, or null for none. */
+    detail: String?,
     showChevron: Boolean,
     onClick: () -> Unit,
 ) {
@@ -346,9 +347,9 @@ private fun ChecklistRow(
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.SemiBold,
                     )
-                    if (itemCount != null) {
+                    if (detail != null) {
                         Text(
-                            "  \u00B7  $itemCount items",
+                            "  \u00B7  $detail",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -388,7 +389,7 @@ private fun SearchSurface(
                     ChecklistRow(
                         cid = hit.cid,
                         title = hit.title.ifBlank { hit.cid },
-                        itemCount = null,
+                        detail = null,
                         showChevron = false,
                         onClick = { haptics.tap(); onOpen(hit) },
                     )

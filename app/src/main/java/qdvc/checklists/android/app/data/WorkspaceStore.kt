@@ -36,6 +36,19 @@ sealed interface IndexStatus {
     data class Ready(val count: Int, val lastRebuilt: Long) : IndexStatus
 }
 
+/**
+ * A checklist as the browse list shows it. Deliberately carries no nodes: that
+ * list displays none, and observing every node in a workspace merely to count
+ * them was work with nothing to show for it.
+ */
+data class ChecklistSummary(
+    val docId: String,
+    val cid: String,
+    val title: String,
+    /** ISO timestamp of the latest done/skipped mark, or null if never marked. */
+    val lastMarkedAt: String?,
+)
+
 /** A checklist with completion resolved — everything the checklist screen draws. */
 data class ChecklistView(
     val checklist: Checklist,
@@ -137,15 +150,21 @@ class WorkspaceStore(
 
     // --- observation (the UI's only read path) ----------------------------- //
 
-    /** Every checklist in a workspace, with nodes, ordered as on disk. */
-    fun observeChecklists(treeUri: Uri): Flow<List<Checklist>> {
+    /** Every checklist in a workspace, ordered as on disk, with its latest mark. */
+    fun observeChecklists(treeUri: Uri): Flow<List<ChecklistSummary>> {
         val ws = treeUri.toString()
-        return combine(dao.observeChecklists(ws), dao.observeAllNodes(ws)) { checklists, nodes ->
-            val byChecklist = nodes.groupBy { it.checklistDocId }
+        return combine(
+            dao.observeChecklists(ws),
+            dao.observeChecklistActivity(ws, MARK_ACTIONS),
+        ) { checklists, activity ->
+            val latestByFolder = activity.associate { it.checklistFolder to it.latest }
             checklists.map { c ->
-                val ordered = byChecklist[c.docId].orEmpty()
-                    .sortedWith(compareBy({ it.seqGroup }, { it.seqNumber }, { it.sortName }))
-                c.toModel(ordered.map { it.toModel() })
+                ChecklistSummary(
+                    docId = c.docId,
+                    cid = c.cid,
+                    title = c.title,
+                    lastMarkedAt = latestByFolder[c.folderName],
+                )
             }
         }
     }
@@ -516,14 +535,6 @@ class WorkspaceStore(
         docId = docId,
     )
 
-    private fun NodeEntity.toModel() = Node(
-        title = title,
-        description = description,
-        kind = NodeKind.fromWire(kind),
-        folderName = folderName,
-        docId = docId,
-    )
-
     private fun NodeWithState.toModel() = Node(
         title = title,
         description = description,
@@ -534,6 +545,15 @@ class WorkspaceStore(
 
     companion object {
         private const val INSERT_CHUNK = 500
+
+        /**
+         * The actions that count as working on a checklist. Unmarking is not one:
+         * it undoes a state, but it doesn't undo having been there.
+         */
+        private val MARK_ACTIONS = listOf(
+            ActionType.MARKED_DONE.label,
+            ActionType.MARKED_SKIPPED.label,
+        )
 
         /**
          * Replay log rows into current completion state: last write wins, in
