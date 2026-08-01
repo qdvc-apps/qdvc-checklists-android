@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -76,6 +77,11 @@ import qdvc.checklists.android.app.util.progressSummary
 @Composable
 fun ChecklistScreen(
     loaded: LoadedChecklist?,
+    /**
+     * Scroll position for the item list. Hoisted by the caller so it survives
+     * leaving this tab; see MainActivity.
+     */
+    listState: LazyListState,
     selectedItemDocId: String?,
     rearranging: Boolean,
     rearrangePrompt: RearrangePrompt?,
@@ -183,7 +189,10 @@ fun ChecklistScreen(
                 onDraftChange = { draft = it },
             )
         } else {
-            LazyColumn(Modifier.padding(padding).fillMaxSize()) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.padding(padding).fillMaxSize(),
+            ) {
                 item {
                     InfoZone(
                         name = checklist.title.ifBlank { checklist.cid },

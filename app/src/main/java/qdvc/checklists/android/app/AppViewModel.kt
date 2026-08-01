@@ -99,13 +99,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var bootstrapped = false
 
     /**
-     * Checklists present in each workspace's projection as of the last successful
-     * read. Used to keep the Jump list honest — a checklist deleted outside the
-     * app must not reappear just because it was open when the app last closed.
-     * A workspace absent from this map was not read this session, so its open
-     * items are left alone rather than assumed deleted.
+     * Workspaces successfully read from disk this session.
+     *
+     * This is a session fact, so a snapshot is right. Whether a *checklist* still
+     * exists is not — it changes as soon as one is created — so that is always
+     * queried live from the projection rather than cached here.
      */
-    private var knownChecklists: Map<Uri, List<ChecklistIdentity>> = emptyMap()
+    private var ingestedWorkspaces: Set<Uri> = emptySet()
 
     // --- theme state ------------------------------------------------------- //
 
@@ -237,7 +237,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         synchronized(progressLock) { progressLines.clear() }
         appendProgress("QDVC Checklists")
         appendProgress("reading ${list.size} workspace(s) from disk")
-        val known = knownChecklists.toMutableMap()
+        val ingested = ingestedWorkspaces.toMutableSet()
         for (w in list) {
             val ok = runCatching { store.ingest(w) { line -> appendProgress(line) } }
                 .onFailure {
@@ -246,12 +246,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 .isSuccess
             // Only trust a workspace we actually managed to read. Treating a
             // failed read as "everything was deleted" would empty the Jump list.
-            if (ok) {
-                known[w.treeUri] = runCatching { store.checklistIdentities(w.treeUri) }
-                    .getOrDefault(emptyList())
-            }
+            if (ok) ingested.add(w.treeUri)
         }
-        knownChecklists = known
+        ingestedWorkspaces = ingested
         pruneOpenItems()
         appendProgress("ready")
         _loadState.value = LoadState.Ready
@@ -275,11 +272,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * renamed outside the app. The checklist ID is the stable identity here; the
      * SAF document id is not, since a rename allocates a new one.
      */
-    private fun pruneOpenItems() {
+    private suspend fun pruneOpenItems() {
         val before = _openItems.value
+        if (before.isEmpty() || ingestedWorkspaces.isEmpty()) return
+
+        // Ask the projection what exists *now*, per workspace. Anything created
+        // since launch is already in there, so it is never mistaken for deleted.
+        val identities = HashMap<Uri, List<ChecklistIdentity>>()
+        for (uri in before.map { it.workspaceUri }.distinct()) {
+            if (uri !in ingestedWorkspaces) continue
+            identities[uri] = runCatching { store.checklistIdentities(uri) }
+                .getOrDefault(emptyList())
+        }
+
         val after = ArrayList<OpenItem>(before.size)
         for (item in before) {
-            val known = knownChecklists[item.workspaceUri]
+            val known = identities[item.workspaceUri]
             if (known == null) {
                 after.add(item) // Workspace not read this session; leave as-is.
                 continue
@@ -300,17 +308,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
         val current = _currentItem.value
         if (current != null) {
-            val replacement = after.firstOrNull {
+            val kept = after.firstOrNull {
                 it.workspaceUri == current.workspaceUri &&
                     it.checklistCid == current.checklistCid
-            } ?: after.firstOrNull()
-            if (replacement != current) {
-                _currentItem.value = replacement
+            }
+            if (kept == null) {
+                // The open checklist is gone from disk. Show the empty state
+                // rather than silently swapping in an unrelated checklist.
+                _currentItem.value = null
+                clearSelection()
+                observeCurrentChecklist()
+            } else if (kept != current) {
+                _currentItem.value = kept
                 clearSelection()
                 observeCurrentChecklist()
             }
         }
-        viewModelScope.launch { settings.persistSession(after, _currentItem.value) }
+        settings.persistSession(after, _currentItem.value)
     }
 
     private fun restoreCurrent(explicitKey: String? = null) {

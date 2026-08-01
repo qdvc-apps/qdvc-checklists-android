@@ -26,6 +26,8 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -113,6 +115,20 @@ private fun AppScaffold(vm: AppViewModel) {
     val darkId by vm.darkThemeId.collectAsStateWithLifecycle()
 
     var showSettings by remember { mutableStateOf(false) }
+
+    // Tab 2's scroll position. Held here, above the AnimatedContent that swaps
+    // tabs, because that discards the outgoing tab's composition — anything
+    // remembered inside ChecklistScreen would reset to the top on every visit.
+    // Keyed per checklist so switching via Jump doesn't inherit someone else's
+    // position, and pruned to what's open so it can't grow without bound.
+    val checklistScroll = remember { mutableMapOf<String, LazyListState>() }
+    val fallbackScroll = rememberLazyListState()
+    val checklistListState = current?.checklistDocId
+        ?.let { docId -> checklistScroll.getOrPut(docId) { LazyListState() } }
+        ?: fallbackScroll
+    LaunchedEffect(openItems) {
+        checklistScroll.keys.retainAll(openItems.map { it.checklistDocId }.toSet())
+    }
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -221,6 +237,7 @@ private fun AppScaffold(vm: AppViewModel) {
                     )
                     Tab.VIEW -> ChecklistScreen(
                         loaded = loaded,
+                        listState = checklistListState,
                         selectedItemDocId = selectedItem?.item?.docId,
                         rearranging = rearranging,
                         rearrangePrompt = rearrangePrompt,
