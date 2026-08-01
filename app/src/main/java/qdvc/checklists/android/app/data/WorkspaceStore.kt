@@ -347,17 +347,27 @@ class WorkspaceStore(
         val ws = treeUri.toString()
         // The on-disk rewrite already moved history onto the new folder names;
         // mirror exactly the same moves here.
-        for ((oldName, newName) in result.renames) {
-            if (oldName == checklistFolderBefore) {
-                dao.renameChecklistInDoneState(ws, oldName, newName)
-                dao.renameChecklistInLog(ws, oldName, newName)
-                dao.renameChecklistInNodes(ws, oldName, newName)
-            } else {
-                dao.renameNodeInDoneState(ws, checklistFolderBefore, oldName, newName)
-                dao.renameNodeInLog(ws, checklistFolderBefore, oldName, newName)
-            }
+        result.checklistRename?.let { (oldName, newName) ->
+            dao.renameChecklistInDoneState(ws, oldName, newName)
+            dao.renameChecklistInLog(ws, oldName, newName)
+            dao.renameChecklistInNodes(ws, oldName, newName)
         }
-        refreshChecklist(treeUri, checklistDocIdBefore, result.docId ?: checklistDocIdBefore)
+        // Node rows are keyed by whatever checklist folder they now carry, which
+        // is the post-rename name if this same write also renamed the checklist.
+        val nodeScope = result.checklistFolder ?: checklistFolderBefore
+        for ((oldName, newName) in result.nodeRenames) {
+            dao.renameNodeInDoneState(ws, nodeScope, oldName, newName)
+            dao.renameNodeInLog(ws, nodeScope, oldName, newName)
+        }
+        // Only a checklist rename changes the checklist's document id. A
+        // node-scoped write reports the *node's* id, which must never land here:
+        // passing it would delete this checklist's rows and re-insert the node
+        // folder as a checklist of its own.
+        refreshChecklist(
+            treeUri,
+            checklistDocIdBefore,
+            result.checklistDocId ?: checklistDocIdBefore,
+        )
         return result
     }
 
@@ -393,9 +403,8 @@ class WorkspaceStore(
     ): ItemRepository.WriteResult = withContext(Dispatchers.IO) {
         val result = runCatching { items.createChecklist(treeUri, cid, title, description) }
             .getOrElse { ItemRepository.WriteResult(false, "Could not create the checklist.") }
-        if (result.ok && result.docId != null) {
-            refreshChecklist(treeUri, result.docId, result.docId)
-        }
+        val newDocId = result.checklistDocId
+        if (result.ok && newDocId != null) refreshChecklist(treeUri, newDocId, newDocId)
         result
     }
 
@@ -408,7 +417,7 @@ class WorkspaceStore(
     ): ItemRepository.WriteResult = withContext(Dispatchers.IO) {
         applyStructural(treeUri, checklist.docId, checklist.folderName) {
             items.createNode(treeUri, checklist, title, description, kind)
-        }.let { if (it.ok) it.copy(docId = checklist.docId) else it }
+        }
     }
 
     suspend fun editChecklist(
@@ -432,7 +441,7 @@ class WorkspaceStore(
     ): ItemRepository.WriteResult = withContext(Dispatchers.IO) {
         applyStructural(treeUri, checklist.docId, checklist.folderName) {
             items.editNode(treeUri, checklist, node, title, description)
-        }.let { if (it.ok) it.copy(docId = checklist.docId) else it }
+        }
     }
 
     suspend fun reorderNodes(

@@ -150,7 +150,9 @@ class ItemRepository(private val context: Context) {
         withContext(Dispatchers.IO) {
             val info = documentInfo(treeUri, docId) ?: return@withContext null
             if (!isDir(info.mimeType)) return@withContext null
-            runCatching { loadOneChecklist(treeUri, info) }.getOrNull()
+            runCatching {
+                loadOneChecklist(treeUri, info, requireChecklistShape = true)
+            }.getOrNull()
         }
 
     /** True if this child is a checklist/node `README.md`. */
@@ -164,12 +166,27 @@ class ItemRepository(private val context: Context) {
         val sortKey: Triple<Int, Int, String>,
     )
 
-    private fun loadOneChecklist(treeUri: Uri, folder: ChildInfo): Checklist? {
+    /**
+     * Load a checklist from its folder. Any folder holding a README.md counts,
+     * matching the studio's tolerant loader — which is right for a scan of
+     * `checklists/`, where position already establishes what a folder is.
+     *
+     * [requireChecklistShape] adds a check for callers addressing a folder
+     * directly by document id, where position guarantees nothing: a node's
+     * README declares `kind`, a checklist's never does, so this refuses to load
+     * a heading or item as though it were a checklist.
+     */
+    private fun loadOneChecklist(
+        treeUri: Uri,
+        folder: ChildInfo,
+        requireChecklistShape: Boolean = false,
+    ): Checklist? {
         val children = childrenOf(treeUri, folder.docId)
         val readme = children.firstOrNull { isReadme(it) } ?: return null
 
         val text = readText(treeUri, readme.docId) ?: return null
         val parsed = Markdown.parse(text)
+        if (requireChecklistShape && parsed.frontmatter.containsKey("kind")) return null
         val cid = parsed.frontmatter["id"]?.trim()?.takeIf { it.isNotEmpty() }
             ?: folder.displayName.substringBefore("-")
 
@@ -548,17 +565,20 @@ class ItemRepository(private val context: Context) {
         val ok: Boolean,
         val error: String? = null,
         /**
-         * Document id of the folder the write affected, *after* the write — a
-         * rename allocates a new id, so callers holding the old one must update.
+         * The *checklist's* document id after the write. Only a checklist rename
+         * changes this; every write reports it so callers never have to guess.
          */
-        val docId: String? = null,
-        /** Folder name after the write. */
-        val folderName: String? = null,
-        /**
-         * Folder renames the write performed, old to new. Callers mirroring this
-         * change elsewhere (the Room projection) apply these in order.
-         */
-        val renames: List<Pair<String, String>> = emptyList(),
+        val checklistDocId: String? = null,
+        /** The checklist's folder name after the write. */
+        val checklistFolder: String? = null,
+        /** The *node's* document id, for a node-scoped write. Null otherwise. */
+        val nodeDocId: String? = null,
+        /** That node's folder name after the write. */
+        val nodeFolder: String? = null,
+        /** The checklist folder rename this write performed, old to new. */
+        val checklistRename: Pair<String, String>? = null,
+        /** Node folder renames this write performed, old to new, in order. */
+        val nodeRenames: List<Pair<String, String>> = emptyList(),
     )
 
     /** Create a new checklist folder with a README. Enforces unique ID + title. */
@@ -593,7 +613,7 @@ class ItemRepository(private val context: Context) {
             return@withContext WriteResult(false, "Could not write the checklist file.")
         }
         logStructural(treeUri, ActionType.CREATED_CHECKLIST, checklistFolder = folderName, itemFolder = "")
-        WriteResult(true, docId = folderId, folderName = folderName)
+        WriteResult(true, checklistDocId = folderId, checklistFolder = folderName)
     }
 
     /** Create a new node (heading or item) at the end of a checklist. */
@@ -624,7 +644,13 @@ class ItemRepository(private val context: Context) {
             treeUri, action,
             checklistFolder = checklist.folderName, itemFolder = folderName,
         )
-        WriteResult(true, docId = folderId, folderName = folderName)
+        WriteResult(
+            true,
+            checklistDocId = checklist.docId,
+            checklistFolder = checklist.folderName,
+            nodeDocId = folderId,
+            nodeFolder = folderName,
+        )
     }
 
     /**
@@ -673,9 +699,9 @@ class ItemRepository(private val context: Context) {
         )
         WriteResult(
             true,
-            docId = folderDocId,
-            folderName = newFolderName,
-            renames = if (renamed) listOf(checklist.folderName to newFolderName) else emptyList(),
+            checklistDocId = folderDocId,
+            checklistFolder = newFolderName,
+            checklistRename = if (renamed) checklist.folderName to newFolderName else null,
         )
     }
 
@@ -722,9 +748,11 @@ class ItemRepository(private val context: Context) {
         )
         WriteResult(
             true,
-            docId = folderDocId,
-            folderName = newFolderName,
-            renames = if (renamed) listOf(node.folderName to newFolderName) else emptyList(),
+            checklistDocId = checklist.docId,
+            checklistFolder = checklist.folderName,
+            nodeDocId = folderDocId,
+            nodeFolder = newFolderName,
+            nodeRenames = if (renamed) listOf(node.folderName to newFolderName) else emptyList(),
         )
     }
 
@@ -767,9 +795,9 @@ class ItemRepository(private val context: Context) {
         logStructural(treeUri, ActionType.REORDERED_NODES, checklistFolder = checklist.folderName, itemFolder = "")
         WriteResult(
             true,
-            docId = checklist.docId,
-            folderName = checklist.folderName,
-            renames = renameMap,
+            checklistDocId = checklist.docId,
+            checklistFolder = checklist.folderName,
+            nodeRenames = renameMap,
         )
     }
 

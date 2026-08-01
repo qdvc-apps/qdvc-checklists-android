@@ -551,13 +551,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // A rename allocates a new document id and folder name; follow both so
             // the open handle, the checklist observation and the Info tab stay valid.
             val updated = open.copy(
-                checklistDocId = res.docId ?: open.checklistDocId,
+                checklistDocId = res.checklistDocId ?: open.checklistDocId,
                 checklistCid = cid.trim(),
                 checklistTitle = title.trim(),
             )
             replaceCurrent(open, updated)
             observeCurrentChecklist()
-            retargetSelection(res.folderName, null)
+            retargetSelection(res.checklistFolder, null)
         }
     }
 
@@ -572,7 +572,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             if (selectedNodeFolder == node.folderName) {
-                retargetSelection(null, res.folderName)
+                retargetSelection(null, res.nodeFolder)
             }
         }
     }
@@ -588,7 +588,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             // Renumbering renames folders; if the inspected node moved, follow it.
-            val moved = res.renames.firstOrNull { it.first == selectedNodeFolder }
+            val moved = res.nodeRenames.firstOrNull { it.first == selectedNodeFolder }
             if (moved != null) retargetSelection(null, moved.second)
         }
     }
