@@ -347,14 +347,14 @@ class WorkspaceStore(
         val ws = treeUri.toString()
         // The on-disk rewrite already moved history onto the new folder names;
         // mirror exactly the same moves here.
-        for ((old, new) in result.renames) {
-            if (old == checklistFolderBefore) {
-                dao.renameChecklistInDoneState(ws, old, new)
-                dao.renameChecklistInLog(ws, old, new)
-                dao.renameChecklistInNodes(ws, old, new)
+        for ((oldName, newName) in result.renames) {
+            if (oldName == checklistFolderBefore) {
+                dao.renameChecklistInDoneState(ws, oldName, newName)
+                dao.renameChecklistInLog(ws, oldName, newName)
+                dao.renameChecklistInNodes(ws, oldName, newName)
             } else {
-                dao.renameNodeInDoneState(ws, checklistFolderBefore, old, new)
-                dao.renameNodeInLog(ws, checklistFolderBefore, old, new)
+                dao.renameNodeInDoneState(ws, checklistFolderBefore, oldName, newName)
+                dao.renameNodeInLog(ws, checklistFolderBefore, oldName, newName)
             }
         }
         refreshChecklist(treeUri, checklistDocIdBefore, result.docId ?: checklistDocIdBefore)

@@ -282,44 +282,47 @@ abstract class IndexDao {
 
     // --- rename fix-ups (mirroring what the on-disk rewrite did) ---------- //
 
-    @Query(
-        "UPDATE done_state SET checklistFolder = :new " +
-            "WHERE workspaceUri = :ws AND checklistFolder = :old"
-    )
-    abstract suspend fun renameChecklistInDoneState(ws: String, old: String, new: String)
+    // NB: parameters must not be named `new` — Room's codegen emits Java, where
+    // it is a reserved word, and the generated DAO then fails to compile.
 
     @Query(
-        "UPDATE log_entries SET checklistFolder = :new " +
-            "WHERE workspaceUri = :ws AND checklistFolder = :old"
+        "UPDATE done_state SET checklistFolder = :newName " +
+            "WHERE workspaceUri = :ws AND checklistFolder = :oldName"
     )
-    abstract suspend fun renameChecklistInLog(ws: String, old: String, new: String)
+    abstract suspend fun renameChecklistInDoneState(ws: String, oldName: String, newName: String)
 
     @Query(
-        "UPDATE nodes SET checklistFolder = :new " +
-            "WHERE workspaceUri = :ws AND checklistFolder = :old"
+        "UPDATE log_entries SET checklistFolder = :newName " +
+            "WHERE workspaceUri = :ws AND checklistFolder = :oldName"
     )
-    abstract suspend fun renameChecklistInNodes(ws: String, old: String, new: String)
+    abstract suspend fun renameChecklistInLog(ws: String, oldName: String, newName: String)
 
     @Query(
-        "UPDATE done_state SET itemFolder = :new WHERE workspaceUri = :ws " +
-            "AND checklistFolder = :checklistFolder AND itemFolder = :old"
+        "UPDATE nodes SET checklistFolder = :newName " +
+            "WHERE workspaceUri = :ws AND checklistFolder = :oldName"
+    )
+    abstract suspend fun renameChecklistInNodes(ws: String, oldName: String, newName: String)
+
+    @Query(
+        "UPDATE done_state SET itemFolder = :newName WHERE workspaceUri = :ws " +
+            "AND checklistFolder = :checklistFolder AND itemFolder = :oldName"
     )
     abstract suspend fun renameNodeInDoneState(
         ws: String,
         checklistFolder: String,
-        old: String,
-        new: String,
+        oldName: String,
+        newName: String,
     )
 
     @Query(
-        "UPDATE log_entries SET itemFolder = :new WHERE workspaceUri = :ws " +
-            "AND checklistFolder = :checklistFolder AND itemFolder = :old"
+        "UPDATE log_entries SET itemFolder = :newName WHERE workspaceUri = :ws " +
+            "AND checklistFolder = :checklistFolder AND itemFolder = :oldName"
     )
     abstract suspend fun renameNodeInLog(
         ws: String,
         checklistFolder: String,
-        old: String,
-        new: String,
+        oldName: String,
+        newName: String,
     )
 
     // --- status & search --------------------------------------------------- //
