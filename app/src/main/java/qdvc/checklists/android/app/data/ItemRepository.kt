@@ -120,45 +120,54 @@ class ItemRepository(private val context: Context) {
             result
         }
 
+    /** True if this child is a checklist/node `README.md`. */
+    private fun isReadme(child: ChildInfo) =
+        !isDir(child.mimeType) && child.displayName.equals(README, ignoreCase = true)
+
+    /** A node folder together with the README we already found inside it. */
+    private data class NodeDir(
+        val dir: ChildInfo,
+        val readme: ChildInfo,
+        val sortKey: Triple<Int, Int, String>,
+    )
+
     private fun loadOneChecklist(treeUri: Uri, folder: ChildInfo): Checklist? {
         val children = childrenOf(treeUri, folder.docId)
-        val readme = children.firstOrNull {
-            !isDir(it.mimeType) && it.displayName.equals(README, ignoreCase = true)
-        } ?: return null
+        val readme = children.firstOrNull { isReadme(it) } ?: return null
 
         val text = readText(treeUri, readme.docId) ?: return null
         val parsed = Markdown.parse(text)
         val cid = parsed.frontmatter["id"]?.trim()?.takeIf { it.isNotEmpty() }
             ?: folder.displayName.substringBefore("-")
 
-        val nodeDirs = children
-            .filter { isDir(it.mimeType) }
-            .filter { dir ->
-                childrenOf(treeUri, dir.docId).any {
-                    !isDir(it.mimeType) && it.displayName.equals(README, ignoreCase = true)
-                }
-            }
-            .sortedWith(compareBy(
-                { Naming.nodeSortKey(it.displayName).first },
-                { Naming.nodeSortKey(it.displayName).second },
-                { Naming.nodeSortKey(it.displayName).third },
-            ))
+        // List each candidate node folder exactly once and keep the README we
+        // found alongside it. Listing a folder is a SAF IPC round trip, so
+        // listing twice — once to test for a README, once to fetch it — doubled
+        // the per-node cost of every scan. A folder with no README isn't a node.
+        val nodeDirs = ArrayList<NodeDir>()
+        for (dir in children) {
+            if (!isDir(dir.mimeType)) continue
+            val nreadme = childrenOf(treeUri, dir.docId).firstOrNull { isReadme(it) } ?: continue
+            nodeDirs.add(NodeDir(dir, nreadme, Naming.nodeSortKey(dir.displayName)))
+        }
+        // Sort on pre-computed keys; the previous comparator re-parsed each
+        // folder name three times per comparison.
+        nodeDirs.sortWith(
+            compareBy<NodeDir>({ it.sortKey.first }, { it.sortKey.second }, { it.sortKey.third })
+        )
 
         val nodes = ArrayList<Node>()
-        for (dir in nodeDirs) {
+        for (nd in nodeDirs) {
             try {
-                val nreadme = childrenOf(treeUri, dir.docId).firstOrNull {
-                    !isDir(it.mimeType) && it.displayName.equals(README, ignoreCase = true)
-                } ?: continue
-                val ntext = readText(treeUri, nreadme.docId) ?: continue
+                val ntext = readText(treeUri, nd.readme.docId) ?: continue
                 val np = Markdown.parse(ntext)
                 nodes.add(
                     Node(
                         title = np.title,
                         description = np.body,
                         kind = NodeKind.fromWire(np.frontmatter["kind"]),
-                        folderName = dir.displayName,
-                        docId = dir.docId,
+                        folderName = nd.dir.displayName,
+                        docId = nd.dir.docId,
                     )
                 )
             } catch (_: Exception) {
@@ -329,6 +338,16 @@ class ItemRepository(private val context: Context) {
 
     // --- action logging (logs/log-YYYY-MM-DD.csv) ------------------------- //
 
+    /**
+     * A single instant, formatted both ways the log needs it: [iso] for the
+     * timestamp column, [day] to pick the daily file.
+     *
+     * Callers can mint a stamp up front, update the UI with it immediately, and
+     * hand the same stamp to the write — so what the user sees is exactly what
+     * lands in the log, with no wait and no re-read afterwards.
+     */
+    data class Stamp(val iso: String, val day: String)
+
     private fun appendActionLog(treeUri: Uri, entries: List<LogEntry>) {
         if (entries.isEmpty()) return
         val logsId = ensureLogsDir(treeUri) ?: return
@@ -400,63 +419,60 @@ class ItemRepository(private val context: Context) {
     /**
      * Mark one item done or not-done by appending a row to today's action log
      * (the log is the source of truth). Returns the resulting [DoneState].
+     *
+     * Pass a [stamp] to reuse an instant the caller has already shown in the UI.
      */
     suspend fun setItemDone(
         treeUri: Uri,
         checklist: Checklist,
         item: Node,
         done: Boolean,
+        stamp: Stamp = stampNow(),
     ): DoneState = withContext(Dispatchers.IO) {
-        val now = Date()
-        val ts = ISO.format(now)
-        val day = DAY.format(now)
-        val markedAt = if (done) ts else null
         appendActionLog(
             treeUri,
             listOf(
                 LogEntry(
-                    timestamp = ts,
-                    dateStamp = day,
+                    timestamp = stamp.iso,
+                    dateStamp = stamp.day,
                     action = if (done) ActionType.MARKED_DONE else ActionType.MARKED_NOT_DONE,
                     checklistFolder = checklist.folderName,
                     itemFolder = item.folderName,
                 )
             )
         )
-        DoneState(done, markedAt)
+        DoneState(done, if (done) stamp.iso else null)
     }
 
     /**
-     * Mark every item in a checklist as not-done in bulk. Each affected item
-     * gets its own log row (mirroring individual unmarks) but with the distinct
-     * bulk action type. Returns the item folder names that were changed.
+     * Mark every item in a checklist as not-done in bulk. Each item gets its own
+     * log row (mirroring individual unmarks) but with the distinct bulk action
+     * type. Returns the item folder names that were logged.
+     *
+     * This deliberately does *not* replay the logs first to work out which items
+     * were previously done: that cost a full pass over every daily log to
+     * produce a value the caller discarded. The caller already holds the current
+     * state in memory and can diff there.
      */
     suspend fun markAllNotDone(
         treeUri: Uri,
         checklist: Checklist,
+        stamp: Stamp = stampNow(),
     ): Set<String> = withContext(Dispatchers.IO) {
-        val now = Date()
-        val ts = ISO.format(now)
-        val day = DAY.format(now)
-        val current = replayDoneStates(treeUri)
-        val items = checklist.nodes.filter { it.kind == NodeKind.ITEM }
-        val changed = LinkedHashSet<String>()
-        val logs = ArrayList<LogEntry>()
-        for (item in items) {
-            val key = stateKey(checklist.folderName, item.folderName)
-            if (current[key]?.done == true) changed.add(item.folderName)
-            logs.add(
+        val itemNodes = checklist.nodes.filter { it.kind == NodeKind.ITEM }
+        appendActionLog(
+            treeUri,
+            itemNodes.map { item ->
                 LogEntry(
-                    timestamp = ts,
-                    dateStamp = day,
+                    timestamp = stamp.iso,
+                    dateStamp = stamp.day,
                     action = ActionType.MARKED_NOT_DONE_BULK,
                     checklistFolder = checklist.folderName,
                     itemFolder = item.folderName,
                 )
-            )
-        }
-        appendActionLog(treeUri, logs)
-        changed
+            }
+        )
+        itemNodes.mapTo(LinkedHashSet()) { it.folderName }
     }
 
     // --- structural writes (create / edit / reorder) ---------------------- //
@@ -766,13 +782,13 @@ class ItemRepository(private val context: Context) {
         checklistFolder: String,
         itemFolder: String,
     ) {
-        val now = Date()
+        val stamp = stampNow()
         appendActionLog(
             treeUri,
             listOf(
                 LogEntry(
-                    timestamp = ISO.format(now),
-                    dateStamp = DAY.format(now),
+                    timestamp = stamp.iso,
+                    dateStamp = stamp.day,
                     action = action,
                     checklistFolder = checklistFolder,
                     itemFolder = itemFolder,
@@ -791,5 +807,14 @@ class ItemRepository(private val context: Context) {
         private val DAY = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
             timeZone = TimeZone.getDefault()
         }
+
+        /**
+         * Stamp an instant (default: now) for the log. [SimpleDateFormat] is not
+         * thread-safe, so every format call is funnelled through this one
+         * synchronised entry point — callers may be on the main thread (minting a
+         * stamp for an optimistic update) or on IO (performing the write).
+         */
+        @Synchronized
+        fun stampNow(at: Date = Date()): Stamp = Stamp(ISO.format(at), DAY.format(at))
     }
 }

@@ -18,6 +18,7 @@ import qdvc.checklists.android.app.data.ThemeMode
 import qdvc.checklists.android.app.data.ThemeRepository
 import qdvc.checklists.android.app.data.ThemeSpec
 import qdvc.checklists.android.app.data.index.SearchHit
+import qdvc.checklists.android.app.model.ActionType
 import qdvc.checklists.android.app.model.Checklist
 import qdvc.checklists.android.app.model.DoneState
 import qdvc.checklists.android.app.model.LogRow
@@ -128,6 +129,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
+
+    /**
+     * Bumped every time done-state is changed in memory (optimistically) or
+     * replaced authoritatively by a full load. A background refresh captures the
+     * value before it starts and applies its result only if it hasn't moved — so
+     * a slow log replay can never clobber a newer tap.
+     */
+    private var markGeneration = 0L
 
     init {
         viewModelScope.launch { settings.themeMode.collect { _themeMode.value = it } }
@@ -334,7 +343,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         settings.persistSession(_openItems.value, _currentItem.value)
     }
 
-    /** Load the current open checklist fresh from disk, with done-states. */
+    /**
+     * Full reload of the current open checklist: re-reads every checklist and
+     * node file in the workspace from disk, then re-derives done-state.
+     *
+     * This is the expensive path — a whole-workspace SAF scan — and is only
+     * needed when the *structure* may have changed: opening or switching
+     * checklists, or after a create / edit / reorder. Marking an item done or
+     * not-done rewrites no checklist file, so those paths use the far cheaper
+     * [refreshDoneStates] instead.
+     */
     fun loadCurrent() {
         val open = _currentItem.value ?: run { _loaded.value = null; return }
         viewModelScope.launch {
@@ -349,14 +367,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             } else {
                 val states = runCatching { items.loadDoneStates(open.workspaceUri) }
                     .getOrDefault(emptyMap())
-                val perItem = HashMap<String, DoneState>()
-                for (n in checklist.nodes) {
-                    // state map is keyed by workspace-relative folder names;
-                    // the UI map is keyed by docId for in-memory lookup only.
-                    states["${checklist.folderName}\u0000${n.folderName}"]
-                        ?.let { perItem[n.docId] = it }
-                }
-                _loaded.value = LoadedChecklist(checklist, perItem)
+                // This read is authoritative, so it supersedes any optimistic
+                // patch and any refresh still in flight.
+                markGeneration++
+                _loaded.value = LoadedChecklist(checklist, doneByDocId(checklist, states))
                 // If an item is being inspected, refresh its resolved state.
                 _selectedItem.value?.let { sel ->
                     val fresh = checklist.nodes.firstOrNull { it.docId == sel.item.docId }
@@ -365,6 +379,55 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             _busy.value = false
         }
+    }
+
+    /**
+     * Re-derive done-state for the *already-loaded* checklist by replaying the
+     * logs, without re-scanning the workspace's files: the structure in memory is
+     * still valid because a mark/unmark only appends to a log.
+     *
+     * This is the authoritative follow-up to an optimistic update — it corrects
+     * the in-memory guess if another client has written to the logs. It is
+     * dropped if a newer mutation has landed since [generation] was taken.
+     */
+    private suspend fun refreshDoneStates(generation: Long) {
+        val open = _currentItem.value ?: return
+        val before = _loaded.value ?: return
+        val states = runCatching { items.loadDoneStates(open.workspaceUri) }
+            .getOrNull() ?: return
+        if (generation != markGeneration) return
+        val current = _loaded.value ?: return
+        // Bail if the user switched checklists while we were reading.
+        if (current.checklist.docId != before.checklist.docId) return
+        _loaded.value = current.copy(done = doneByDocId(current.checklist, states))
+    }
+
+    /**
+     * Project the workspace-wide done-state map onto one checklist's nodes. The
+     * logs key on workspace-relative folder names; the UI map keys on docId for
+     * cheap in-memory lookup.
+     */
+    private fun doneByDocId(
+        checklist: Checklist,
+        states: Map<String, DoneState>,
+    ): Map<String, DoneState> {
+        val perItem = HashMap<String, DoneState>()
+        for (n in checklist.nodes) {
+            states["${checklist.folderName}\u0000${n.folderName}"]
+                ?.let { perItem[n.docId] = it }
+        }
+        return perItem
+    }
+
+    /**
+     * Patch one item's done-state in the loaded checklist, in memory only.
+     * A null [state] removes the entry (restoring "never marked").
+     */
+    private fun applyDoneState(itemDocId: String, state: DoneState?) {
+        val current = _loaded.value ?: return
+        val next = current.done.toMutableMap()
+        if (state == null) next.remove(itemDocId) else next[itemDocId] = state
+        _loaded.value = current.copy(done = next)
     }
 
     // --- item inspection (Info tab) --------------------------------------- //
@@ -393,36 +456,137 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _selectedItem.value = SelectedItem(item, done, log)
     }
 
-    /** Toggle the currently-inspected item's done-state (from the Info tab). */
+    /**
+     * Toggle the currently-inspected item's done-state (from the Info tab).
+     *
+     * Both tabs update optimistically and synchronously: we already know what the
+     * new state will be, and the mark rewrites no checklist file, so there is
+     * nothing to read back before painting. The log append then happens in the
+     * background, followed by a cheap done-state reconcile — no workspace
+     * re-scan. If the write fails the patch is rolled back and the user is told.
+     */
     fun toggleSelectedItemDone() {
         val sel = _selectedItem.value ?: return
         val loaded = _loaded.value ?: return
         val open = _currentItem.value ?: return
+        val item = sel.item
         val newDone = !(sel.done?.done ?: false)
+        val stamp = ItemRepository.stampNow()
+        val previousDone = loaded.done[item.docId]
+        val newState = DoneState(newDone, if (newDone) stamp.iso else null)
+        val action = if (newDone) ActionType.MARKED_DONE else ActionType.MARKED_NOT_DONE
+
+        // 1. Optimistic: Tab 2's tick and Tab 3's panel, this frame. The log row
+        //    we prepend is exactly the one we're about to write.
+        applyDoneState(item.docId, newState)
+        _selectedItem.value = sel.copy(
+            done = newState,
+            log = listOf(LogRow(stamp.iso, action.label)) + sel.log,
+        )
+        val generation = ++markGeneration
+
+        // 2. Persist, then reconcile against the logs in the background.
         viewModelScope.launch {
-            runCatching { items.setItemDone(open.workspaceUri, loaded.checklist, sel.item, newDone) }
-            loadCurrent()
-            refreshSelectedItem(open.workspaceUri, loaded.checklist, sel.item)
+            val ok = runCatching {
+                items.setItemDone(open.workspaceUri, loaded.checklist, item, newDone, stamp)
+            }.isSuccess
+            if (!ok) {
+                if (generation == markGeneration) {
+                    applyDoneState(item.docId, previousDone)
+                    _selectedItem.value = sel
+                    _message.value = "Could not save that change."
+                }
+                return@launch
+            }
+            refreshDoneStates(generation)
         }
     }
 
     // --- done-state mutations --------------------------------------------- //
 
+    /**
+     * Set one item's done-state directly. Optimistic, with the same
+     * roll-back-and-reconcile pattern as the Info-tab toggle.
+     */
     fun setItemDone(item: Node, done: Boolean) {
         val loaded = _loaded.value ?: return
         val open = _currentItem.value ?: return
+        val stamp = ItemRepository.stampNow()
+        val previousDone = loaded.done[item.docId]
+        val previousSelected = _selectedItem.value
+        val newState = DoneState(done, if (done) stamp.iso else null)
+        val action = if (done) ActionType.MARKED_DONE else ActionType.MARKED_NOT_DONE
+
+        applyDoneState(item.docId, newState)
+        // Keep the Info tab in step if it happens to be showing this item.
+        previousSelected?.takeIf { it.item.docId == item.docId }?.let { sel ->
+            _selectedItem.value = sel.copy(
+                done = newState,
+                log = listOf(LogRow(stamp.iso, action.label)) + sel.log,
+            )
+        }
+        val generation = ++markGeneration
+
         viewModelScope.launch {
-            runCatching { items.setItemDone(open.workspaceUri, loaded.checklist, item, done) }
-            loadCurrent()
+            val ok = runCatching {
+                items.setItemDone(open.workspaceUri, loaded.checklist, item, done, stamp)
+            }.isSuccess
+            if (!ok) {
+                if (generation == markGeneration) {
+                    applyDoneState(item.docId, previousDone)
+                    if (previousSelected?.item?.docId == item.docId) {
+                        _selectedItem.value = previousSelected
+                    }
+                    _message.value = "Could not save that change."
+                }
+                return@launch
+            }
+            refreshDoneStates(generation)
         }
     }
 
+    /**
+     * Clear every item's done-state in the current checklist. Optimistic: all
+     * items flip to not-done immediately, then one row per item is appended and
+     * the result reconciled.
+     */
     fun markAllNotDone() {
         val loaded = _loaded.value ?: return
         val open = _currentItem.value ?: return
+        val stamp = ItemRepository.stampNow()
+        val previousDone = loaded.done
+        val previousSelected = _selectedItem.value
+        val itemNodes = loaded.checklist.nodes.filter { it.kind == NodeKind.ITEM }
+        val cleared = DoneState(false, null)
+
+        val next = loaded.done.toMutableMap()
+        for (n in itemNodes) next[n.docId] = cleared
+        _loaded.value = loaded.copy(done = next)
+        previousSelected
+            ?.takeIf { sel -> itemNodes.any { it.docId == sel.item.docId } }
+            ?.let { sel ->
+                _selectedItem.value = sel.copy(
+                    done = cleared,
+                    log = listOf(
+                        LogRow(stamp.iso, ActionType.MARKED_NOT_DONE_BULK.label)
+                    ) + sel.log,
+                )
+            }
+        val generation = ++markGeneration
+
         viewModelScope.launch {
-            runCatching { items.markAllNotDone(open.workspaceUri, loaded.checklist) }
-            loadCurrent()
+            val ok = runCatching {
+                items.markAllNotDone(open.workspaceUri, loaded.checklist, stamp)
+            }.isSuccess
+            if (!ok) {
+                if (generation == markGeneration) {
+                    _loaded.value = _loaded.value?.copy(done = previousDone)
+                    _selectedItem.value = previousSelected
+                    _message.value = "Could not clear the checklist."
+                }
+                return@launch
+            }
+            refreshDoneStates(generation)
         }
     }
 
