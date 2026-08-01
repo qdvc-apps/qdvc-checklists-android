@@ -181,6 +181,15 @@ state is app-owned and lives separately), so:
 - The index status/regenerate screen lives inside the all-checklists view rather
   than as its own Home level, keeping Home to two levels.
 
+## Manual tests
+
+`manual-tests/` holds a [QDVC Test Management](https://github.com/qdvc-apps/test-management)
+workspace with the manual test plan: 7 suites, 55 cases, 206 steps, covering
+workspace loading, navigation, marking, authoring, what lands on disk, search, and
+appearance. Eight cases are regression tests for defects found during development.
+See `manual-tests/README.md`; `manual-tests/validate-workspace.py` checks the
+workspace against the published format.
+
 ## Build
 
 ```
