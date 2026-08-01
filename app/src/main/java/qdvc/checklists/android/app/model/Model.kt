@@ -35,16 +35,44 @@ data class Checklist(
     val docId: String,
 )
 
+/**
+ * Where an item stands.
+ *
+ * The transitions are deliberately narrow: only [NOT_DONE] can become [DONE] or
+ * [SKIPPED], and both of those can only return to [NOT_DONE] — never straight to
+ * each other. Modelling this as one value rather than two booleans keeps
+ * "done and skipped at once" unrepresentable.
+ */
+enum class ItemState(val wire: String) {
+    NOT_DONE("not_done"),
+    DONE("done"),
+    SKIPPED("skipped");
+
+    companion object {
+        fun fromWire(raw: String?): ItemState {
+            val key = raw?.trim()?.lowercase()
+            return entries.firstOrNull { it.wire == key } ?: NOT_DONE
+        }
+    }
+}
+
 /** The completion state of one item, as tracked by this app. */
 data class DoneState(
-    val done: Boolean,
-    /** ISO-8601 local timestamp of when it was last marked done, if done. */
+    val state: ItemState,
+    /** ISO-8601 local timestamp of when it reached this state, if not not-done. */
     val markedAt: String? = null,
-)
+) {
+    val done: Boolean get() = state == ItemState.DONE
+    val skipped: Boolean get() = state == ItemState.SKIPPED
+
+    /** Needs no further action — either finished or deliberately passed over. */
+    val resolved: Boolean get() = state != ItemState.NOT_DONE
+}
 
 /** How a mark/unmark or structural action was performed — recorded in the log. */
 enum class ActionType(val label: String) {
     MARKED_DONE("marked_done"),
+    MARKED_SKIPPED("marked_skipped"),
     MARKED_NOT_DONE("marked_not_done"),
     MARKED_NOT_DONE_BULK("marked_not_done_bulk"),
     CREATED_CHECKLIST("created_checklist"),

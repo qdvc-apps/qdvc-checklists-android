@@ -20,6 +20,7 @@ import qdvc.checklists.android.app.data.index.ChecklistIdentity
 import qdvc.checklists.android.app.data.index.SearchHit
 import qdvc.checklists.android.app.model.Checklist
 import qdvc.checklists.android.app.model.DoneState
+import qdvc.checklists.android.app.model.ItemState
 import qdvc.checklists.android.app.model.LogRow
 import qdvc.checklists.android.app.model.Node
 import qdvc.checklists.android.app.model.NodeKind
@@ -63,6 +64,9 @@ data class SelectedItem(
  * The UI is held on the loading screen until this reaches [Ready], because until
  * then there is genuinely nothing to show.
  */
+/** Which confirmation the rearrange mode is currently asking for. */
+enum class RearrangePrompt { CANCEL, SAVE }
+
 sealed interface LoadState {
     /** Before the first workspace list has arrived. */
     data object Starting : LoadState
@@ -148,6 +152,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _selectedItem = MutableStateFlow<SelectedItem?>(null)
     val selectedItem: StateFlow<SelectedItem?> = _selectedItem.asStateFlow()
+
+    /**
+     * Whether the checklist is unlocked for drag-to-reorder. Deliberately not
+     * persisted: if the app is killed mid-rearrange the draft order is simply
+     * discarded, and the app comes back in its normal state.
+     */
+    private val _rearranging = MutableStateFlow(false)
+    val rearranging: StateFlow<Boolean> = _rearranging.asStateFlow()
+
+    private val _rearrangePrompt = MutableStateFlow<RearrangePrompt?>(null)
+    val rearrangePrompt: StateFlow<RearrangePrompt?> = _rearrangePrompt.asStateFlow()
 
     /** Transient user-facing message (e.g. a validation error). Cleared on read. */
     private val _message = MutableStateFlow<String?>(null)
@@ -339,7 +354,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * checklist, the checklist returns to Home — and on Home the press walks up
      * the browse hierarchy before the system gets it.
      */
-    fun navigateBack(): Boolean = when (_tab.value) {
+    fun navigateBack(): Boolean {
+        // Rearranging holds an unsaved draft, so back asks before throwing it away.
+        if (_rearranging.value) {
+            askCancelRearrange()
+            return true
+        }
+        return navigateBackFromTab()
+    }
+
+    private fun navigateBackFromTab(): Boolean = when (_tab.value) {
         Tab.HOME -> browseUp()
         Tab.VIEW -> {
             _tab.value = Tab.HOME
@@ -511,6 +535,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun observeCurrentChecklist() {
         checklistJob?.cancel()
+        // Rearranging belongs to one checklist; never carry it across a switch.
+        _rearranging.value = false
+        _rearrangePrompt.value = null
         val open = _currentItem.value
         if (open == null) {
             _loaded.value = null
@@ -576,23 +603,30 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // change can't be stranded by a scheduler. The UI updates from the Room
     // query, and a failed write rolls the projection back before reporting.
 
-    /** Toggle the currently-inspected item's done-state (from the Info tab). */
+    /**
+     * Toggle the currently-inspected item between done and not-done. A skipped
+     * item counts as resolved, so this returns it to not-done — the only move
+     * available from either resolved state.
+     */
     fun toggleSelectedItemDone() {
+        val sel = _selectedItem.value ?: return
+        val target = if (sel.done?.resolved == true) ItemState.NOT_DONE else ItemState.DONE
+        setSelectedItemState(target)
+    }
+
+    /** Skip the currently-inspected item. Only reachable from not-done. */
+    fun skipSelectedItem() {
+        val sel = _selectedItem.value ?: return
+        if (sel.done?.resolved == true) return
+        setSelectedItemState(ItemState.SKIPPED)
+    }
+
+    private fun setSelectedItemState(state: ItemState) {
         val sel = _selectedItem.value ?: return
         val loaded = _loaded.value ?: return
         val open = _currentItem.value ?: return
-        val newDone = !(sel.done?.done ?: false)
         viewModelScope.launch {
-            val ok = store.setItemDone(open.workspaceUri, loaded.checklist, sel.item, newDone)
-            if (!ok) _message.value = "Could not save that change to the workspace."
-        }
-    }
-
-    fun setItemDone(item: Node, done: Boolean) {
-        val loaded = _loaded.value ?: return
-        val open = _currentItem.value ?: return
-        viewModelScope.launch {
-            val ok = store.setItemDone(open.workspaceUri, loaded.checklist, item, done)
+            val ok = store.setItemState(open.workspaceUri, loaded.checklist, sel.item, state)
             if (!ok) _message.value = "Could not save that change to the workspace."
         }
     }
@@ -664,6 +698,32 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 retargetSelection(null, res.nodeFolder)
             }
         }
+    }
+
+    // --- rearrange mode ---------------------------------------------------- //
+
+    /** Unlock the checklist for drag-to-reorder. */
+    fun startRearrange() {
+        if (_loaded.value == null) return
+        _rearrangePrompt.value = null
+        _rearranging.value = true
+    }
+
+    fun askCancelRearrange() { _rearrangePrompt.value = RearrangePrompt.CANCEL }
+    fun askSaveRearrange() { _rearrangePrompt.value = RearrangePrompt.SAVE }
+    fun dismissRearrangePrompt() { _rearrangePrompt.value = null }
+
+    /** Leave rearrange mode, throwing the draft order away. */
+    fun confirmCancelRearrange() {
+        _rearrangePrompt.value = null
+        _rearranging.value = false
+    }
+
+    /** Leave rearrange mode, writing [orderedFolderNames] to disk. */
+    fun confirmSaveRearrange(orderedFolderNames: List<String>) {
+        _rearrangePrompt.value = null
+        _rearranging.value = false
+        reorderNodes(orderedFolderNames)
     }
 
     /** Persist a reordering of the current checklist's nodes. */

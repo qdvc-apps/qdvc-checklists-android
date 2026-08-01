@@ -5,15 +5,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.selectable
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowDownward
-import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -26,9 +19,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import qdvc.checklists.android.app.model.Node
 import qdvc.checklists.android.app.model.NodeKind
 
 /** Create/edit a checklist: ID + name + description. */
@@ -164,58 +155,6 @@ fun EditNodeDialog(
                 onClick = { onConfirm(name.trim(), description.trim()) },
                 enabled = name.isNotBlank(),
             ) { Text("Save") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
-}
-
-/** Reorder headings and items with up/down controls; confirm to persist. */
-@Composable
-fun ReorderDialog(
-    nodes: List<Node>,
-    onConfirm: (orderedFolderNames: List<String>) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    var order by remember { mutableStateOf(nodes) }
-
-    fun move(index: Int, delta: Int) {
-        val target = index + delta
-        if (target < 0 || target >= order.size) return
-        order = order.toMutableList().also {
-            val tmp = it[index]; it[index] = it[target]; it[target] = tmp
-        }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Rearrange items") },
-        text = {
-            LazyColumn {
-                items(order, key = { it.folderName }) { node ->
-                    val i = order.indexOf(node)
-                    Row(
-                        Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            node.title,
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = if (node.kind == NodeKind.HEADING) FontWeight.Bold
-                            else FontWeight.Normal,
-                            modifier = Modifier.weight(1f),
-                        )
-                        IconButton(onClick = { move(i, -1) }, enabled = i > 0) {
-                            Icon(Icons.Filled.ArrowUpward, contentDescription = "Move up")
-                        }
-                        IconButton(onClick = { move(i, +1) }, enabled = i < order.size - 1) {
-                            Icon(Icons.Filled.ArrowDownward, contentDescription = "Move down")
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { onConfirm(order.map { it.folderName }) }) { Text("Save order") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )

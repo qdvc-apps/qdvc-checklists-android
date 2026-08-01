@@ -22,6 +22,7 @@ import qdvc.checklists.android.app.data.index.SearchHit
 import qdvc.checklists.android.app.model.ActionType
 import qdvc.checklists.android.app.model.Checklist
 import qdvc.checklists.android.app.model.DoneState
+import qdvc.checklists.android.app.model.ItemState
 import qdvc.checklists.android.app.model.LogRow
 import qdvc.checklists.android.app.model.Node
 import qdvc.checklists.android.app.model.NodeKind
@@ -116,9 +117,11 @@ class WorkspaceStore(
                 dao.setMeta(IndexMeta(ws, now, checklists.size))
 
                 val itemCount = checklists.sumOf { c -> c.nodes.count { it.kind == NodeKind.ITEM } }
+                val done = doneStates.count { it.state == ItemState.DONE.wire }
+                val skipped = doneStates.count { it.state == ItemState.SKIPPED.wire }
                 onProgress(
                     "\"${workspace.name}\" ready — ${checklists.size} checklists, " +
-                        "$itemCount items, ${doneStates.count { it.done }} done"
+                        "$itemCount items, $done done, $skipped skipped"
                 )
             }
         }
@@ -130,32 +133,6 @@ class WorkspaceStore(
             dao.clearWorkspace(ws)
             dao.deleteMeta(ws)
         }
-    }
-
-    /**
-     * Replay the log rows into current completion state: last write wins, in
-     * timestamp order. Only mark/unmark actions count; structural rows (which
-     * carry an empty item_folder) don't affect completion.
-     */
-    private fun foldDoneStates(
-        ws: String,
-        rows: List<ItemRepository.RawLogRow>,
-    ): List<DoneStateEntity> {
-        // sortedBy is stable, so rows sharing a timestamp keep file order —
-        // matching how the previous live replay resolved ties.
-        val marks = rows.filter { it.itemFolder.isNotEmpty() }.sortedBy { it.timestamp }
-        val latest = LinkedHashMap<Pair<String, String>, DoneStateEntity>()
-        for (r in marks) {
-            val key = r.checklistFolder to r.itemFolder
-            when (r.action) {
-                ActionType.MARKED_DONE.label ->
-                    latest[key] = DoneStateEntity(ws, r.checklistFolder, r.itemFolder, true, r.timestamp)
-                ActionType.MARKED_NOT_DONE.label,
-                ActionType.MARKED_NOT_DONE_BULK.label ->
-                    latest[key] = DoneStateEntity(ws, r.checklistFolder, r.itemFolder, false, null)
-            }
-        }
-        return latest.values.toList()
     }
 
     // --- observation (the UI's only read path) ----------------------------- //
@@ -187,8 +164,8 @@ class WorkspaceStore(
                     checklist = entity.toModel(nodes.map { it.toModel() }),
                     done = buildMap {
                         for (n in nodes) {
-                            val done = n.done ?: continue
-                            put(n.docId, DoneState(done, n.markedAt))
+                            val state = n.state ?: continue
+                            put(n.docId, DoneState(ItemState.fromWire(state), n.markedAt))
                         }
                     },
                 )
@@ -214,7 +191,7 @@ class WorkspaceStore(
             } else {
                 NodeView(
                     node = n.toModel(),
-                    done = n.done?.let { DoneState(it, n.markedAt) },
+                    done = n.state?.let { DoneState(ItemState.fromWire(it), n.markedAt) },
                     log = log.map { LogRow(it.timestamp, it.action) },
                 )
             }
@@ -251,19 +228,23 @@ class WorkspaceStore(
     // --- marks (projection first, then an immediate filesystem write) ------ //
 
     /**
-     * Mark one item. Returns true if the log row reached disk; on false the
-     * projection has already been rolled back to its previous value.
+     * Move one item to [state]. Returns true if the log row reached disk; on false
+     * the projection has already been rolled back to its previous value.
      */
-    suspend fun setItemDone(
+    suspend fun setItemState(
         treeUri: Uri,
         checklist: Checklist,
         item: Node,
-        done: Boolean,
+        state: ItemState,
     ): Boolean = withContext(Dispatchers.IO) {
         val ws = treeUri.toString()
         val stamp = ItemRepository.stampNow()
         val previous = dao.doneStateFor(ws, checklist.folderName, item.folderName)
-        val action = if (done) ActionType.MARKED_DONE else ActionType.MARKED_NOT_DONE
+        val action = when (state) {
+            ItemState.DONE -> ActionType.MARKED_DONE
+            ItemState.SKIPPED -> ActionType.MARKED_SKIPPED
+            ItemState.NOT_DONE -> ActionType.MARKED_NOT_DONE
+        }
 
         dao.upsertDoneStates(
             listOf(
@@ -271,8 +252,8 @@ class WorkspaceStore(
                     workspaceUri = ws,
                     checklistFolder = checklist.folderName,
                     itemFolder = item.folderName,
-                    done = done,
-                    markedAt = if (done) stamp.iso else null,
+                    state = state.wire,
+                    markedAt = if (state == ItemState.NOT_DONE) null else stamp.iso,
                 )
             )
         )
@@ -281,7 +262,7 @@ class WorkspaceStore(
         )
 
         val ok = runCatching {
-            items.setItemDone(treeUri, checklist, item, done, stamp)
+            items.setItemState(treeUri, checklist, item, state, stamp)
         }.getOrDefault(false)
         if (!ok) {
             dao.deleteLogEntriesAt(ws, stamp.iso, checklist.folderName, listOf(item.folderName))
@@ -303,9 +284,13 @@ class WorkspaceStore(
             if (itemNodes.isEmpty()) return@withContext true
             val previous = dao.doneStatesFor(ws, checklist.folderName)
 
+            // A bulk clear is the same as unmarking each item individually, so it
+            // resets skipped items too.
             dao.upsertDoneStates(
                 itemNodes.map {
-                    DoneStateEntity(ws, checklist.folderName, it.folderName, false, null)
+                    DoneStateEntity(
+                        ws, checklist.folderName, it.folderName, ItemState.NOT_DONE.wire, null
+                    )
                 }
             )
             dao.insertLogEntries(
@@ -549,6 +534,38 @@ class WorkspaceStore(
 
     companion object {
         private const val INSERT_CHUNK = 500
+
+        /**
+         * Replay log rows into current completion state: last write wins, in
+         * timestamp order. Only the mark actions count; structural rows (which
+         * carry an empty item_folder) don't affect completion.
+         *
+         * Lives in the companion, and touches nothing but its arguments, so the
+         * app's most important derivation can be tested without a device.
+         */
+        fun foldDoneStates(
+            ws: String,
+            rows: List<ItemRepository.RawLogRow>,
+        ): List<DoneStateEntity> {
+            // sortedBy is stable, so rows sharing a timestamp keep file order.
+            val marks = rows.filter { it.itemFolder.isNotEmpty() }.sortedBy { it.timestamp }
+            val latest = LinkedHashMap<Pair<String, String>, DoneStateEntity>()
+            for (r in marks) {
+                val key = r.checklistFolder to r.itemFolder
+                fun put(state: ItemState, at: String?) {
+                    latest[key] = DoneStateEntity(
+                        ws, r.checklistFolder, r.itemFolder, state.wire, at
+                    )
+                }
+                when (r.action) {
+                    ActionType.MARKED_DONE.label -> put(ItemState.DONE, r.timestamp)
+                    ActionType.MARKED_SKIPPED.label -> put(ItemState.SKIPPED, r.timestamp)
+                    ActionType.MARKED_NOT_DONE.label,
+                    ActionType.MARKED_NOT_DONE_BULK.label -> put(ItemState.NOT_DONE, null)
+                }
+            }
+            return latest.values.toList()
+        }
 
         /**
          * Turn user input into a safe MATCH expression: split on whitespace,

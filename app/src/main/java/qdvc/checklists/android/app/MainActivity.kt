@@ -12,6 +12,9 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
@@ -102,6 +105,8 @@ private fun AppScaffold(vm: AppViewModel) {
     val allChecklists by vm.allChecklists.collectAsStateWithLifecycle()
     val searchResults by vm.searchResults.collectAsStateWithLifecycle()
     val indexStatus by vm.indexStatus.collectAsStateWithLifecycle()
+    val rearranging by vm.rearranging.collectAsStateWithLifecycle()
+    val rearrangePrompt by vm.rearrangePrompt.collectAsStateWithLifecycle()
 
     val themeMode by vm.themeMode.collectAsStateWithLifecycle()
     val lightId by vm.lightThemeId.collectAsStateWithLifecycle()
@@ -159,7 +164,15 @@ private fun AppScaffold(vm: AppViewModel) {
 
     Scaffold(
         bottomBar = {
-            BottomBar(current = tab, itemOpen = itemOpen, onSelect = vm::selectTab)
+            // Rearranging takes over the screen, so the tab bar slides out of the
+            // way and slides back when the mode ends.
+            AnimatedVisibility(
+                visible = !rearranging,
+                enter = slideInVertically(animationSpec = tween(220)) { it },
+                exit = slideOutVertically(animationSpec = tween(220)) { it },
+            ) {
+                BottomBar(current = tab, itemOpen = itemOpen, onSelect = vm::selectTab)
+            }
         },
         snackbarHost = { SnackbarHost(snackbarHost) },
         contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
@@ -209,15 +222,23 @@ private fun AppScaffold(vm: AppViewModel) {
                     Tab.VIEW -> ChecklistScreen(
                         loaded = loaded,
                         selectedItemDocId = selectedItem?.item?.docId,
+                        rearranging = rearranging,
+                        rearrangePrompt = rearrangePrompt,
                         onInspectItem = vm::inspectItem,
                         onMarkAllNotDone = vm::markAllNotDone,
                         onEditChecklist = vm::editChecklist,
                         onCreateNode = vm::createNode,
-                        onReorder = vm::reorderNodes,
+                        onStartRearrange = vm::startRearrange,
+                        onAskCancelRearrange = vm::askCancelRearrange,
+                        onAskSaveRearrange = vm::askSaveRearrange,
+                        onDismissRearrangePrompt = vm::dismissRearrangePrompt,
+                        onConfirmCancelRearrange = vm::confirmCancelRearrange,
+                        onConfirmSaveRearrange = vm::confirmSaveRearrange,
                     )
                     Tab.INFO -> InfoScreen(
                         selected = selectedItem,
                         onToggleDone = vm::toggleSelectedItemDone,
+                        onSkip = vm::skipSelectedItem,
                         onEditNode = vm::editNode,
                     )
                     Tab.SWITCHER -> SwitcherScreen(

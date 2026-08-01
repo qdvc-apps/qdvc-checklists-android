@@ -14,6 +14,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.Button
@@ -40,6 +41,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import qdvc.checklists.android.app.SelectedItem
 import qdvc.checklists.android.app.model.ActionType
+import qdvc.checklists.android.app.model.ItemState
 import qdvc.checklists.android.app.model.LogRow
 import qdvc.checklists.android.app.model.Node
 import qdvc.checklists.android.app.model.NodeKind
@@ -52,6 +54,7 @@ import qdvc.checklists.android.app.util.DateFormatting
 fun InfoScreen(
     selected: SelectedItem?,
     onToggleDone: () -> Unit,
+    onSkip: () -> Unit,
     onEditNode: (node: Node, name: String, description: String) -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
@@ -80,6 +83,22 @@ fun InfoScreen(
                                 onClick = { menuOpen = false; showEdit = true },
                                 leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
                             )
+                            // Skipping is only reachable from not-done; a done or
+                            // already-skipped item must be un-marked first.
+                            if (selected.item.kind != NodeKind.HEADING &&
+                                selected.done?.resolved != true
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Mark as skipped") },
+                                    onClick = { menuOpen = false; onSkip() },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Filled.FastForward,
+                                            contentDescription = null,
+                                        )
+                                    },
+                                )
+                            }
                         }
                     }
                 },
@@ -97,7 +116,9 @@ fun InfoScreen(
         }
 
         val isHeading = selected.item.kind == NodeKind.HEADING
-        val done = selected.done?.done == true
+        val itemState = selected.done?.state ?: ItemState.NOT_DONE
+        // Done and skipped share one exit: back to not-done.
+        val resolved = itemState != ItemState.NOT_DONE
 
         LazyColumn(Modifier.padding(padding).fillMaxSize()) {
             item {
@@ -133,14 +154,18 @@ fun InfoScreen(
                         )
                     } else {
                         Text(
-                            if (done) "Marked done " +
-                                DateFormatting.humanMarkedAt(selected.done?.markedAt)
-                            else "Not done",
+                            when (itemState) {
+                                ItemState.DONE -> "Marked done " +
+                                    DateFormatting.humanMarkedAt(selected.done?.markedAt)
+                                ItemState.SKIPPED -> "Skipped " +
+                                    DateFormatting.humanMarkedAt(selected.done?.markedAt)
+                                ItemState.NOT_DONE -> "Not done"
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 12.dp),
                         )
-                        if (done) {
+                        if (resolved) {
                             OutlinedButton(
                                 onClick = onToggleDone,
                                 modifier = Modifier.padding(top = 12.dp),

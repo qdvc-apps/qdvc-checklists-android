@@ -4,10 +4,14 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import qdvc.checklists.android.app.data.ItemRepository
 import qdvc.checklists.android.app.data.WorkspaceStore
+import qdvc.checklists.android.app.model.ItemState
 import qdvc.checklists.android.app.util.Csv
 import qdvc.checklists.android.app.util.Markdown
 import qdvc.checklists.android.app.util.Naming
+import qdvc.checklists.android.app.util.movedItem
+import qdvc.checklists.android.app.util.progressSummary
 
 class MarkdownTest {
     @Test
@@ -130,5 +134,175 @@ class QueryTest {
     @Test
     fun buildMatchNullForEmpty() {
         assertNull(WorkspaceStore.buildMatch("   "))
+    }
+}
+
+/** The reorder gesture's arithmetic, isolated from the drag handling. */
+class ReorderingTest {
+
+    private val list = listOf("a", "b", "c", "d", "e")
+
+    @Test
+    fun movesDownOne() {
+        assertEquals(listOf("b", "a", "c", "d", "e"), list.movedItem(0, 1))
+    }
+
+    @Test
+    fun movesUpOne() {
+        assertEquals(listOf("a", "b", "d", "c", "e"), list.movedItem(3, 2))
+    }
+
+    @Test
+    fun movesFirstToLast() {
+        assertEquals(listOf("b", "c", "d", "e", "a"), list.movedItem(0, 4))
+    }
+
+    @Test
+    fun movesLastToFirst() {
+        assertEquals(listOf("e", "a", "b", "c", "d"), list.movedItem(4, 0))
+    }
+
+    @Test
+    fun sameIndexIsANoOp() {
+        assertEquals(list, list.movedItem(2, 2))
+    }
+
+    @Test
+    fun outOfRangeIndicesLeaveTheListAlone() {
+        assertEquals(list, list.movedItem(-1, 2))
+        assertEquals(list, list.movedItem(0, 9))
+        assertEquals(emptyList<String>(), emptyList<String>().movedItem(0, 1))
+    }
+
+    @Test
+    fun stepwiseDragCarriesAnItemAcrossTheList() {
+        var seq = list
+        for (i in 0 until 4) seq = seq.movedItem(i, i + 1)
+        assertEquals(listOf("b", "c", "d", "e", "a"), seq)
+    }
+
+    @Test
+    fun everyMovePreservesSizeAndContents() {
+        for (from in -1..5) {
+            for (to in -1..5) {
+                val out = list.movedItem(from, to)
+                assertEquals(list.size, out.size)
+                assertEquals(list.toSet(), out.toSet())
+            }
+        }
+    }
+}
+
+/** The checklist progress line, including the skipped state. */
+class ProgressSummaryTest {
+
+    @Test
+    fun reportsDoneSkippedAndRemaining() {
+        assertEquals("4 done, 1 skipped, 2 remaining", progressSummary(4, 1, 7))
+    }
+
+    @Test
+    fun omitsSkippedWhenThereAreNone() {
+        assertEquals("4 done, 3 remaining", progressSummary(4, 0, 7))
+    }
+
+    @Test
+    fun handlesAllSkipped() {
+        assertEquals("0 done, 7 skipped, 0 remaining", progressSummary(0, 7, 7))
+    }
+
+    @Test
+    fun handlesAnEmptyChecklist() {
+        assertEquals("No items yet", progressSummary(0, 0, 0))
+    }
+
+    @Test
+    fun clampsSoRemainingIsNeverNegative() {
+        assertEquals("7 done, 0 remaining", progressSummary(9, 9, 7))
+    }
+}
+
+/** Deriving current completion state by replaying the daily logs. */
+class DoneStateFoldTest {
+
+    private fun row(ts: String, action: String, item: String, checklist: String = "C1") =
+        ItemRepository.RawLogRow(ts, action, "android-app", checklist, item)
+
+    private fun stateOf(
+        rows: List<ItemRepository.RawLogRow>,
+        item: String,
+    ): Pair<String, String?>? =
+        WorkspaceStore.foldDoneStates("ws", rows)
+            .firstOrNull { it.itemFolder == item }
+            ?.let { it.state to it.markedAt }
+
+    @Test
+    fun anUnmarkedItemHasNoRow() {
+        assertNull(stateOf(emptyList(), "01-a"))
+        assertNull(stateOf(listOf(row("T1", "marked_done", "01-a")), "02-b"))
+    }
+
+    @Test
+    fun recordsDoneWithItsTimestamp() {
+        assertEquals(ItemState.DONE.wire to "T1", stateOf(listOf(row("T1", "marked_done", "01-a")), "01-a"))
+    }
+
+    @Test
+    fun recordsSkippedWithItsTimestamp() {
+        assertEquals(
+            ItemState.SKIPPED.wire to "T1",
+            stateOf(listOf(row("T1", "marked_skipped", "01-a")), "01-a"),
+        )
+    }
+
+    @Test
+    fun unmarkingASkippedItemClearsTheTimestamp() {
+        assertEquals(
+            ItemState.NOT_DONE.wire to null,
+            stateOf(
+                listOf(row("T1", "marked_skipped", "01-a"), row("T2", "marked_not_done", "01-a")),
+                "01-a",
+            ),
+        )
+    }
+
+    @Test
+    fun bulkClearResetsSkippedItemsToo() {
+        assertEquals(
+            ItemState.NOT_DONE.wire to null,
+            stateOf(
+                listOf(
+                    row("T1", "marked_skipped", "01-a"),
+                    row("T2", "marked_not_done_bulk", "01-a"),
+                ),
+                "01-a",
+            ),
+        )
+    }
+
+    @Test
+    fun theLatestTimestampWinsRegardlessOfFileOrder() {
+        assertEquals(
+            ItemState.SKIPPED.wire to "T9",
+            stateOf(
+                listOf(row("T9", "marked_skipped", "01-a"), row("T1", "marked_done", "01-a")),
+                "01-a",
+            ),
+        )
+    }
+
+    @Test
+    fun structuralAndUnknownActionsDoNotChangeState() {
+        assertEquals(
+            ItemState.SKIPPED.wire to "T1",
+            stateOf(
+                listOf(
+                    row("T1", "marked_skipped", "01-a"),
+                    row("T2", "renamed_item", "01-a"),
+                    row("T3", "marked_deferred", "01-a"),
+                ),
+                "01-a",
+            ),
+        )
     }
 }

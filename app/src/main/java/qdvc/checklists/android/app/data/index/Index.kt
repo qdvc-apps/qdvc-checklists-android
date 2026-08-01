@@ -96,7 +96,8 @@ data class DoneStateEntity(
     val workspaceUri: String,
     val checklistFolder: String,
     val itemFolder: String,
-    val done: Boolean,
+    /** `ItemState.wire` — "done", "skipped" or "not_done". */
+    val state: String,
     val markedAt: String?,
 )
 
@@ -135,14 +136,14 @@ data class SearchHit(
     val snippet: String,
 )
 
-/** A node plus its resolved done-state; `done` is null when never marked. */
+/** A node plus its resolved state; `state` is null when the item was never marked. */
 data class NodeWithState(
     val docId: String,
     val folderName: String,
     val title: String,
     val description: String,
     val kind: String,
-    val done: Boolean?,
+    val state: String?,
     val markedAt: String?,
 )
 
@@ -229,7 +230,7 @@ abstract class IndexDao {
     @Query(
         "SELECT n.docId AS docId, n.folderName AS folderName, n.title AS title, " +
             "n.description AS description, n.kind AS kind, " +
-            "d.done AS done, d.markedAt AS markedAt " +
+            "d.state AS state, d.markedAt AS markedAt " +
             "FROM nodes AS n " +
             "LEFT JOIN done_state AS d ON d.workspaceUri = n.workspaceUri " +
             "AND d.checklistFolder = n.checklistFolder AND d.itemFolder = n.folderName " +
@@ -367,7 +368,7 @@ abstract class IndexDao {
         LogEntryEntity::class,
         IndexMeta::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class IndexDatabase : RoomDatabase() {

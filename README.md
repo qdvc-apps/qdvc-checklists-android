@@ -20,12 +20,25 @@ checklists, headings, and items. Completion state and an audit trail live in a
   headings and items.
 - Each item shows a tick when done, with greyed-out strikethrough text and, on
   its second line, the date and time it was marked done.
+- An item can also be **skipped** — passed over deliberately rather than
+  completed. A skipped item reads like a done one (greyed, struck through, with
+  the time it was settled) but carries a muted fast-forward icon instead of an
+  accented tick. Skipping is offered from the Info tab's menu, and is only
+  reachable from not-done: a skipped or done item must be returned to not-done
+  first, so the two settled states can never be confused for one another.
+- The progress bar splits three ways — accented for done, muted for skipped,
+  empty for the rest — above a line reading e.g. "4 done, 1 skipped,
+  2 remaining".
 - **Tap an item or heading** → the Info tab opens its detail: for an item, its
   done/not-done status and a toggle button; for a heading, a sensible read-only
   panel (headings have no done-state); plus the full logged history.
 - **Create and edit** — a New checklist option on Home, and per-checklist
   options to edit its ID/name/description, add a heading or item, and rearrange
-  headings and items. Items and headings can be renamed from the Info tab. New
+  headings and items. **Rearrange items** unlocks the list for drag-to-reorder:
+  press and hold a row and drag it, with the toolbar menu replaced by Cancel and
+  Save (each of which confirms first) and the tab bar sliding out of the way
+  until you leave the mode. The draft order is never persisted, so quitting
+  mid-rearrange simply discards it. Items and headings can be renamed from the Info tab. New
   checklists/items must not collide with an existing ID or name (the studio's
   exact-ID, case-insensitive-title rule). Every create, edit, rename, and
   reorder is recorded in the log.
@@ -83,7 +96,12 @@ projection (see below); the UI then reads completion from there.
 
 Marks are appended to today's log **immediately** when you tick something — in
 append mode, so adding a row costs one row's worth of writing rather than
-rewriting the day's file.
+rewriting the day's file. If another client has left the file without a final
+newline, the missing separator is supplied first, so a row is never spliced onto
+the previous one.
+
+"Mark all items not done" is exactly equivalent to unmarking each item in turn,
+so it clears skipped items as well as done ones.
 
 The `client` column records which app wrote the row; this app writes
 `android-app`.
@@ -93,8 +111,9 @@ Items are identified only by their **workspace-relative folder names** (e.g.
 document ids or absolute paths, so the log files never reveal where the
 workspace lives on the device or what the workspace folder itself is called.
 
-Action types include `marked_done`, `marked_not_done`, `marked_not_done_bulk`
-(the bulk button, one row per item), and the structural actions
+Action types include `marked_done`, `marked_skipped`, `marked_not_done`,
+`marked_not_done_bulk` (the bulk button, one row per item), and the structural
+actions
 `created_checklist`, `created_item`, `created_heading`, `renamed_checklist`,
 `renamed_item`, `edited_checklist`, `edited_item`, and `reordered_nodes`.
 

@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import qdvc.checklists.android.app.model.ActionType
 import qdvc.checklists.android.app.model.Checklist
+import qdvc.checklists.android.app.model.ItemState
 import qdvc.checklists.android.app.model.Node
 import qdvc.checklists.android.app.model.NodeKind
 import qdvc.checklists.android.app.util.Csv
@@ -503,16 +504,16 @@ class ItemRepository(private val context: Context) {
     // --- public mutations -------------------------------------------------- //
 
     /**
-     * Mark one item done or not-done by appending a row to today's action log.
-     * Returns true only if the row reached the filesystem.
+     * Move one item to [state] by appending a row to today's action log. Returns
+     * true only if the row reached the filesystem.
      *
      * Pass a [stamp] to reuse an instant the caller has already shown in the UI.
      */
-    suspend fun setItemDone(
+    suspend fun setItemState(
         treeUri: Uri,
         checklist: Checklist,
         item: Node,
-        done: Boolean,
+        state: ItemState,
         stamp: Stamp = stampNow(),
     ): Boolean = withContext(Dispatchers.IO) {
         appendActionLog(
@@ -521,7 +522,11 @@ class ItemRepository(private val context: Context) {
                 LogEntry(
                     timestamp = stamp.iso,
                     dateStamp = stamp.day,
-                    action = if (done) ActionType.MARKED_DONE else ActionType.MARKED_NOT_DONE,
+                    action = when (state) {
+                        ItemState.DONE -> ActionType.MARKED_DONE
+                        ItemState.SKIPPED -> ActionType.MARKED_SKIPPED
+                        ItemState.NOT_DONE -> ActionType.MARKED_NOT_DONE
+                    },
                     checklistFolder = checklist.folderName,
                     itemFolder = item.folderName,
                 )
