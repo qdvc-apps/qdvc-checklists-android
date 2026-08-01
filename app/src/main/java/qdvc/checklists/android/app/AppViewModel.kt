@@ -16,6 +16,7 @@ import qdvc.checklists.android.app.data.ThemeMode
 import qdvc.checklists.android.app.data.ThemeRepository
 import qdvc.checklists.android.app.data.ThemeSpec
 import qdvc.checklists.android.app.data.WorkspaceStore
+import qdvc.checklists.android.app.data.index.ChecklistIdentity
 import qdvc.checklists.android.app.data.index.SearchHit
 import qdvc.checklists.android.app.model.Checklist
 import qdvc.checklists.android.app.model.DoneState
@@ -92,6 +93,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** True once the first workspace list has been seen and ingested. */
     private var bootstrapped = false
+
+    /**
+     * Checklists present in each workspace's projection as of the last successful
+     * read. Used to keep the Jump list honest — a checklist deleted outside the
+     * app must not reappear just because it was open when the app last closed.
+     * A workspace absent from this map was not read this session, so its open
+     * items are left alone rather than assumed deleted.
+     */
+    private var knownChecklists: Map<Uri, List<ChecklistIdentity>> = emptyMap()
 
     // --- theme state ------------------------------------------------------- //
 
@@ -183,6 +193,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             settings.openItems.collect { list ->
                 _openItems.value = list
+                // The persisted session and the ingest can arrive in either
+                // order, so prune on both; it is idempotent.
+                pruneOpenItems()
                 restoreCurrent()
             }
         }
@@ -209,12 +222,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         synchronized(progressLock) { progressLines.clear() }
         appendProgress("QDVC Checklists")
         appendProgress("reading ${list.size} workspace(s) from disk")
+        val known = knownChecklists.toMutableMap()
         for (w in list) {
-            runCatching { store.ingest(w) { line -> appendProgress(line) } }
+            val ok = runCatching { store.ingest(w) { line -> appendProgress(line) } }
                 .onFailure {
                     appendProgress("\"${w.name}\" failed: ${it.message ?: "unknown error"}")
                 }
+                .isSuccess
+            // Only trust a workspace we actually managed to read. Treating a
+            // failed read as "everything was deleted" would empty the Jump list.
+            if (ok) {
+                known[w.treeUri] = runCatching { store.checklistIdentities(w.treeUri) }
+                    .getOrDefault(emptyList())
+            }
         }
+        knownChecklists = known
+        pruneOpenItems()
         appendProgress("ready")
         _loadState.value = LoadState.Ready
         _browse.value.workspace?.let { refreshIndexStatus(it) }
@@ -229,6 +252,50 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             progressLines.toList()
         }
         _loadState.value = LoadState.Loading(snapshot)
+    }
+
+    /**
+     * Reconcile the open-checklist list against what is actually on disk: drop
+     * anything that has been deleted, and re-point anything whose folder was
+     * renamed outside the app. The checklist ID is the stable identity here; the
+     * SAF document id is not, since a rename allocates a new one.
+     */
+    private fun pruneOpenItems() {
+        val before = _openItems.value
+        val after = ArrayList<OpenItem>(before.size)
+        for (item in before) {
+            val known = knownChecklists[item.workspaceUri]
+            if (known == null) {
+                after.add(item) // Workspace not read this session; leave as-is.
+                continue
+            }
+            val match = known.firstOrNull { it.docId == item.checklistDocId }
+                ?: known.firstOrNull { it.cid == item.checklistCid }
+                ?: continue // Gone from disk — don't offer it in Jump.
+            after.add(
+                item.copy(
+                    checklistDocId = match.docId,
+                    checklistCid = match.cid,
+                    checklistTitle = match.title,
+                )
+            )
+        }
+        if (after == before) return
+        _openItems.value = after
+
+        val current = _currentItem.value
+        if (current != null) {
+            val replacement = after.firstOrNull {
+                it.workspaceUri == current.workspaceUri &&
+                    it.checklistCid == current.checklistCid
+            } ?: after.firstOrNull()
+            if (replacement != current) {
+                _currentItem.value = replacement
+                clearSelection()
+                observeCurrentChecklist()
+            }
+        }
+        viewModelScope.launch { settings.persistSession(after, _currentItem.value) }
     }
 
     private fun restoreCurrent(explicitKey: String? = null) {
@@ -265,6 +332,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         _tab.value = target
+    }
+
+    /**
+     * Handle a system back press. The tabs form a chain — Info returns to the
+     * checklist, the checklist returns to Home — and on Home the press walks up
+     * the browse hierarchy before the system gets it.
+     */
+    fun navigateBack(): Boolean = when (_tab.value) {
+        Tab.HOME -> browseUp()
+        Tab.VIEW -> {
+            _tab.value = Tab.HOME
+            true
+        }
+        Tab.INFO -> {
+            _tab.value = Tab.VIEW
+            true
+        }
+        Tab.SWITCHER -> {
+            // Jump sits outside the chain; fall back to whatever is open.
+            _tab.value = if (_currentItem.value != null) Tab.VIEW else Tab.HOME
+            true
+        }
     }
 
     /** Step up one level in the home hierarchy. Returns true if it consumed the back. */

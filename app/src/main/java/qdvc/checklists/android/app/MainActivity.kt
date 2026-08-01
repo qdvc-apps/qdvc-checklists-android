@@ -148,10 +148,14 @@ private fun AppScaffold(vm: AppViewModel) {
         return
     }
 
-    // System back mirrors the Home toolbar back arrow (A2/B2). Enabled only when
-    // on Home and not at the home root.
-    val homeCanGoBack = tab == Tab.HOME && browse.mode != BrowseMode.WORKSPACES
-    BackHandler(enabled = homeCanGoBack) { vm.browseUp() }
+    // System back follows the tab chain: Info -> Checklist -> Home. On Home it
+    // mirrors the toolbar back arrow (A2/B2), walking up the browse hierarchy,
+    // and is disabled at the home root so the system can close the app.
+    val canGoBack = when (tab) {
+        Tab.HOME -> browse.mode != BrowseMode.WORKSPACES
+        Tab.VIEW, Tab.INFO, Tab.SWITCHER -> true
+    }
+    BackHandler(enabled = canGoBack) { vm.navigateBack() }
 
     Scaffold(
         bottomBar = {

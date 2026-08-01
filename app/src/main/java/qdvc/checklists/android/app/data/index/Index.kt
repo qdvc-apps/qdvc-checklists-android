@@ -149,6 +149,9 @@ data class NodeWithState(
 /** One logged action, most-recent-first, for the Info tab's history list. */
 data class LogLine(val timestamp: String, val action: String)
 
+/** Enough of a checklist to recognise it again across a restart or a rename. */
+data class ChecklistIdentity(val docId: String, val cid: String, val title: String)
+
 @Dao
 abstract class IndexDao {
 
@@ -213,6 +216,9 @@ abstract class IndexDao {
 
     @Query("SELECT * FROM checklists WHERE workspaceUri = :ws ORDER BY folderName")
     abstract fun observeChecklists(ws: String): Flow<List<ChecklistEntity>>
+
+    @Query("SELECT docId, cid, title FROM checklists WHERE workspaceUri = :ws")
+    abstract suspend fun identities(ws: String): List<ChecklistIdentity>
 
     @Query("SELECT * FROM nodes WHERE workspaceUri = :ws")
     abstract fun observeAllNodes(ws: String): Flow<List<NodeEntity>>

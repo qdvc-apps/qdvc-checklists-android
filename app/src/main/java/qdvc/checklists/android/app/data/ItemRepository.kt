@@ -299,12 +299,42 @@ class ItemRepository(private val context: Context) {
         null
     }
 
-    private fun readAllLines(uri: Uri): List<String> = try {
+    /** Lines of a document, or null if it could not be read at all. */
+    private fun readAllLinesOrNull(uri: Uri): List<String>? = try {
         resolver.openInputStream(uri)?.use { input ->
             BufferedReader(InputStreamReader(input, Charsets.UTF_8)).readLines()
-        } ?: emptyList()
+        }
     } catch (_: Exception) {
-        emptyList()
+        null
+    }
+
+    private fun readAllLines(uri: Uri): List<String> = readAllLinesOrNull(uri) ?: emptyList()
+
+    /** How a document's bytes end — decides whether an append needs a separator. */
+    private enum class Tail { EMPTY, TERMINATED, UNTERMINATED, UNKNOWN }
+
+    /**
+     * Classify a document's final byte. Streams to the end rather than seeking by
+     * the size from a directory listing, which can be stale when another client
+     * has just written to the file.
+     */
+    private fun tailOf(uri: Uri): Tail = try {
+        resolver.openInputStream(uri)?.use { input ->
+            val buf = ByteArray(8192)
+            var last = -1
+            while (true) {
+                val n = input.read(buf)
+                if (n <= 0) break
+                last = buf[n - 1].toInt() and 0xFF
+            }
+            when (last) {
+                -1 -> Tail.EMPTY
+                '\n'.code, '\r'.code -> Tail.TERMINATED
+                else -> Tail.UNTERMINATED
+            }
+        } ?: Tail.UNKNOWN
+    } catch (_: Exception) {
+        Tail.UNKNOWN
     }
 
     private fun writeAll(uri: Uri, text: String): Boolean = try {
@@ -432,15 +462,26 @@ class ItemRepository(private val context: Context) {
      * DocumentsProvider supports "wa", so fall back to read-modify-write.
      */
     private fun appendOrRewrite(uri: Uri, text: String): Boolean {
-        try {
-            resolver.openOutputStream(uri, "wa")?.use { out ->
-                out.write(text.toByteArray(Charsets.UTF_8))
-                return true
+        val tail = tailOf(uri)
+        if (tail != Tail.UNKNOWN) {
+            // This app always terminates the rows it writes, but another client
+            // editing the same log need not. Appending straight onto a file whose
+            // last line has no terminator splices the new row onto it, corrupting
+            // both rows — so supply the missing separator first.
+            val payload = if (tail == Tail.UNTERMINATED) "\n" + text else text
+            try {
+                resolver.openOutputStream(uri, "wa")?.use { out ->
+                    out.write(payload.toByteArray(Charsets.UTF_8))
+                    return true
+                }
+            } catch (_: Exception) {
+                // Provider doesn't support append; fall through to a rewrite.
             }
-        } catch (_: Exception) {
-            // Provider doesn't support append; fall through.
         }
-        val existing = readAllLines(uri)
+        // Rewrite fallback, which also repairs a missing terminator. Bail rather
+        // than truncate if the existing rows can't be read: writing only the new
+        // ones would destroy the file.
+        val existing = readAllLinesOrNull(uri) ?: return false
         val rebuilt = buildString {
             for (line in existing) {
                 if (line.isBlank()) continue

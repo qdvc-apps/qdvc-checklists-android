@@ -11,6 +11,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import qdvc.checklists.android.app.data.index.ChecklistEntity
+import qdvc.checklists.android.app.data.index.ChecklistIdentity
 import qdvc.checklists.android.app.data.index.DoneStateEntity
 import qdvc.checklists.android.app.data.index.IndexDatabase
 import qdvc.checklists.android.app.data.index.IndexMeta
@@ -221,6 +222,10 @@ class WorkspaceStore(
     }
 
     // --- status & search --------------------------------------------------- //
+
+    /** Every checklist currently in a workspace's projection. */
+    suspend fun checklistIdentities(treeUri: Uri): List<ChecklistIdentity> =
+        withContext(Dispatchers.IO) { dao.identities(treeUri.toString()) }
 
     suspend fun statusFor(treeUri: Uri): IndexStatus = withContext(Dispatchers.IO) {
         val meta = dao.meta(treeUri.toString()) ?: return@withContext IndexStatus.NotBuilt
