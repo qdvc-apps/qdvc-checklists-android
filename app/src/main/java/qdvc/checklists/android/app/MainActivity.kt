@@ -44,6 +44,7 @@ import qdvc.checklists.android.app.ui.checklist.InfoScreen
 import qdvc.checklists.android.app.ui.components.BottomBar
 import qdvc.checklists.android.app.ui.home.HomeScreen
 import qdvc.checklists.android.app.ui.settings.SettingsScreen
+import qdvc.checklists.android.app.ui.splash.SplashScreen
 import qdvc.checklists.android.app.ui.switcher.SwitcherScreen
 import qdvc.checklists.android.app.ui.theme.QDVCTheme
 import qdvc.checklists.android.app.ui.theme.resolveDark
@@ -69,12 +70,20 @@ private fun AppRoot(vm: AppViewModel) {
     // Reference the ids so a change recomposes and re-resolves the theme.
     val spec = remember(dark, lightId, darkId) { vm.themeFor(dark) }
 
+    val loadState by vm.loadState.collectAsStateWithLifecycle()
+
     QDVCTheme(spec = spec, darkTheme = dark) {
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background,
         ) {
-            AppScaffold(vm)
+            // Everything the app shows comes from the local projection, so hold the
+            // UI until the launch-time read has populated it.
+            when (val state = loadState) {
+                is LoadState.Starting -> SplashScreen(lines = emptyList())
+                is LoadState.Loading -> SplashScreen(lines = state.lines)
+                is LoadState.Ready -> AppScaffold(vm)
+            }
         }
     }
 }

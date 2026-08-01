@@ -4,21 +4,19 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import qdvc.checklists.android.app.data.IndexRepository
 import qdvc.checklists.android.app.data.IndexStatus
 import qdvc.checklists.android.app.data.ItemRepository
 import qdvc.checklists.android.app.data.SettingsRepository
 import qdvc.checklists.android.app.data.ThemeMode
 import qdvc.checklists.android.app.data.ThemeRepository
 import qdvc.checklists.android.app.data.ThemeSpec
+import qdvc.checklists.android.app.data.WorkspaceStore
 import qdvc.checklists.android.app.data.index.SearchHit
-import qdvc.checklists.android.app.model.ActionType
 import qdvc.checklists.android.app.model.Checklist
 import qdvc.checklists.android.app.model.DoneState
 import qdvc.checklists.android.app.model.LogRow
@@ -59,17 +57,43 @@ data class SelectedItem(
     val log: List<LogRow>,
 )
 
+/**
+ * Progress of the launch-time read of the workspaces into the local projection.
+ * The UI is held on the loading screen until this reaches [Ready], because until
+ * then there is genuinely nothing to show.
+ */
+sealed interface LoadState {
+    /** Before the first workspace list has arrived. */
+    data object Starting : LoadState
+
+    /** Reading; [lines] is the running terminal-style transcript. */
+    data class Loading(val lines: List<String>) : LoadState
+
+    data object Ready : LoadState
+}
+
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val settings = SettingsRepository(app)
     private val items = ItemRepository(app)
     private val themes = ThemeRepository(app)
-    val index = IndexRepository(app, items)
+    private val store = WorkspaceStore(app, items)
 
     private val _indexStatus = MutableStateFlow<IndexStatus>(IndexStatus.NotBuilt)
     val indexStatus: StateFlow<IndexStatus> = _indexStatus.asStateFlow()
 
-    // --- theme state ------------------------------------------------------ //
+    // --- launch-time load -------------------------------------------------- //
+
+    private val _loadState = MutableStateFlow<LoadState>(LoadState.Starting)
+    val loadState: StateFlow<LoadState> = _loadState.asStateFlow()
+
+    private val progressLock = Any()
+    private val progressLines = ArrayList<String>()
+
+    /** True once the first workspace list has been seen and ingested. */
+    private var bootstrapped = false
+
+    // --- theme state ------------------------------------------------------- //
 
     private val _themeMode = MutableStateFlow(ThemeMode.AUTOMATIC)
     val themeMode: StateFlow<ThemeMode> = _themeMode.asStateFlow()
@@ -127,26 +151,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _searchResults = MutableStateFlow<List<SearchHit>>(emptyList())
     val searchResults: StateFlow<List<SearchHit>> = _searchResults.asStateFlow()
 
-    private val _busy = MutableStateFlow(false)
-    val busy: StateFlow<Boolean> = _busy.asStateFlow()
+    // Observation jobs; each is replaced when what it watches changes.
+    private var checklistJob: Job? = null
+    private var selectionJob: Job? = null
+    private var browseJob: Job? = null
 
-    /**
-     * Bumped every time done-state is changed in memory (optimistically) or
-     * replaced authoritatively by a full load. A background refresh captures the
-     * value before it starts and applies its result only if it hasn't moved — so
-     * a slow log replay can never clobber a newer tap.
-     */
-    private var markGeneration = 0L
+    /** Folder names the Info-tab observation is currently keyed on. */
+    private var selectedChecklistFolder: String? = null
+    private var selectedNodeFolder: String? = null
 
     init {
         viewModelScope.launch { settings.themeMode.collect { _themeMode.value = it } }
         viewModelScope.launch { settings.lightThemeId.collect { _lightThemeId.value = it } }
         viewModelScope.launch { settings.darkThemeId.collect { _darkThemeId.value = it } }
         viewModelScope.launch {
-            settings.workspaces.collect { ws ->
-                _workspaces.value = ws
-                // Reconcile indexes quietly in the background on launch.
-                ws.forEach { w -> launch { runCatching { index.reconcile(w.treeUri) } } }
+            settings.workspaces.collect { list ->
+                val previous = _workspaces.value
+                _workspaces.value = list
+                if (!bootstrapped) {
+                    bootstrapped = true
+                    ingest(list)
+                } else {
+                    // A workspace was just added — read only the new one.
+                    val added = list.filter { new ->
+                        previous.none { it.treeUri == new.treeUri }
+                    }
+                    if (added.isNotEmpty()) ingest(added)
+                }
             }
         }
         viewModelScope.launch {
@@ -160,15 +191,44 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (key != null && _currentItem.value == null) restoreCurrent(key)
             }
         }
-        // Mirror the index's live status (e.g. BUILDING progress) into our flow
-        // whenever we're viewing the current workspace's index-status surface.
-        viewModelScope.launch {
-            index.status.collect { live ->
-                if (_browse.value.mode == BrowseMode.ALL_CHECKLISTS) {
-                    _indexStatus.value = live
-                }
-            }
+    }
+
+    // --- ingest & loading screen ------------------------------------------- //
+
+    /**
+     * Read the given workspaces from disk into the projection, streaming progress
+     * to the loading screen. The UI stays blocked until this finishes: this is the
+     * one place the app traverses the filesystem in bulk, and everything after it
+     * reads from Room.
+     */
+    private suspend fun ingest(list: List<Workspace>) {
+        if (list.isEmpty()) {
+            _loadState.value = LoadState.Ready
+            return
         }
+        synchronized(progressLock) { progressLines.clear() }
+        appendProgress("QDVC Checklists")
+        appendProgress("reading ${list.size} workspace(s) from disk")
+        for (w in list) {
+            runCatching { store.ingest(w) { line -> appendProgress(line) } }
+                .onFailure {
+                    appendProgress("\"${w.name}\" failed: ${it.message ?: "unknown error"}")
+                }
+        }
+        appendProgress("ready")
+        _loadState.value = LoadState.Ready
+        _browse.value.workspace?.let { refreshIndexStatus(it) }
+    }
+
+    /** Append one transcript line. Called from IO during a scan. */
+    private fun appendProgress(line: String) {
+        val snapshot = synchronized(progressLock) {
+            progressLines.add(line)
+            // Keep the transcript bounded; a big workspace emits a line per folder.
+            while (progressLines.size > MAX_PROGRESS_LINES) progressLines.removeAt(0)
+            progressLines.toList()
+        }
+        _loadState.value = LoadState.Loading(snapshot)
     }
 
     private fun restoreCurrent(explicitKey: String? = null) {
@@ -178,12 +238,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             list.firstOrNull { SettingsRepository.openItemKey(it) == key }
         } else {
             _currentItem.value?.let { cur ->
-                list.firstOrNull { SettingsRepository.openItemKey(it) == SettingsRepository.openItemKey(cur) }
+                list.firstOrNull {
+                    SettingsRepository.openItemKey(it) == SettingsRepository.openItemKey(cur)
+                }
             }
         }
         if (found != null && _currentItem.value == null) {
             _currentItem.value = found
-            loadCurrent()
+            observeCurrentChecklist()
         }
     }
 
@@ -199,6 +261,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (target == Tab.HOME && _tab.value == Tab.HOME) {
             // Re-tap Item 1 -> jump to the home root.
             _browse.value = BrowseState()
+            observeBrowse(null)
             return
         }
         _tab.value = target
@@ -216,6 +279,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     _searchResults.value = emptyList()
                 } else {
                     _browse.value = BrowseState(BrowseMode.WORKSPACES)
+                    observeBrowse(null)
                 }
                 true
             }
@@ -225,7 +289,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Open a workspace straight into its all-checklists list. */
     fun openWorkspace(ws: Workspace) {
         _browse.value = BrowseState(BrowseMode.ALL_CHECKLISTS, ws)
-        loadAllChecklists(ws)
+        observeBrowse(ws)
         refreshIndexStatus(ws)
     }
 
@@ -246,44 +310,50 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun refreshIndexStatus(ws: Workspace) {
-        // statusFor() performs a synchronous Room query, so it must run off the
-        // main thread. Update the flow once it returns.
         viewModelScope.launch {
-            val status = withContext(Dispatchers.IO) {
-                runCatching { index.statusFor(ws.treeUri) }.getOrDefault(IndexStatus.NotBuilt)
-            }
-            _indexStatus.value = status
+            _indexStatus.value = runCatching { store.statusFor(ws.treeUri) }
+                .getOrDefault(IndexStatus.NotBuilt)
+        }
+    }
+
+    /** Watch every checklist in the browsed workspace (Home's second level). */
+    private fun observeBrowse(ws: Workspace?) {
+        browseJob?.cancel()
+        if (ws == null) {
+            _allChecklists.value = emptyList()
+            return
+        }
+        browseJob = viewModelScope.launch {
+            store.observeChecklists(ws.treeUri).collect { _allChecklists.value = it }
         }
     }
 
     // --- workspace management --------------------------------------------- //
 
     fun addWorkspace(uri: Uri, name: String) = viewModelScope.launch {
+        // The workspaces collector notices the addition and ingests it.
         settings.addWorkspace(uri, name)
-        runCatching { index.reconcile(uri) }
     }
 
     fun removeWorkspace(ws: Workspace) = viewModelScope.launch {
         settings.removeWorkspace(ws.treeUri)
+        runCatching { store.forget(ws.treeUri) }
         // Drop open items belonging to this workspace.
         val remaining = _openItems.value.filter { it.workspaceUri != ws.treeUri }
         _openItems.value = remaining
         if (_currentItem.value?.workspaceUri == ws.treeUri) {
             _currentItem.value = remaining.firstOrNull()
-            loadCurrent()
+            clearSelection()
+            observeCurrentChecklist()
         }
         settings.persistSession(remaining, _currentItem.value)
-        if (_browse.value.workspace?.treeUri == ws.treeUri) _browse.value = BrowseState()
+        if (_browse.value.workspace?.treeUri == ws.treeUri) {
+            _browse.value = BrowseState()
+            observeBrowse(null)
+        }
     }
 
-    // --- checklist listing & opening -------------------------------------- //
-
-    private fun loadAllChecklists(ws: Workspace) = viewModelScope.launch {
-        _busy.value = true
-        _allChecklists.value = runCatching { items.loadChecklists(ws.treeUri) }
-            .getOrDefault(emptyList())
-        _busy.value = false
-    }
+    // --- checklist opening & switching ------------------------------------ //
 
     fun openChecklist(ws: Workspace, checklist: Checklist) {
         val open = OpenItem(
@@ -294,15 +364,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             workspaceName = ws.name,
         )
         val list = _openItems.value.toMutableList()
-        if (list.none { SettingsRepository.openItemKey(it) == SettingsRepository.openItemKey(open) }) {
+        if (list.none {
+                SettingsRepository.openItemKey(it) == SettingsRepository.openItemKey(open)
+            }
+        ) {
             list.add(open)
         }
         _openItems.value = list
         _currentItem.value = open
-        _selectedItem.value = null
+        clearSelection()
         _tab.value = Tab.VIEW
         persist()
-        loadCurrent()
+        observeCurrentChecklist()
     }
 
     fun openByHit(ws: Workspace, hit: SearchHit) {
@@ -310,19 +383,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (checklist != null) {
             openChecklist(ws, checklist)
         } else {
-            viewModelScope.launch {
-                val loaded = items.loadChecklists(ws.treeUri).firstOrNull { it.docId == hit.docId }
-                if (loaded != null) openChecklist(ws, loaded)
-            }
+            // Search and the checklist list are both projections of the same
+            // workspace, so this should not happen — say so rather than no-op.
+            _message.value = "That checklist is no longer in this workspace."
         }
     }
 
     fun selectOpenItem(open: OpenItem) {
         _currentItem.value = open
-        _selectedItem.value = null
+        clearSelection()
         _tab.value = Tab.VIEW
         persist()
-        loadCurrent()
+        observeCurrentChecklist()
     }
 
     fun closeOpenItem(open: OpenItem) {
@@ -334,7 +406,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             SettingsRepository.openItemKey(_currentItem.value!!) == key
         ) {
             _currentItem.value = list.firstOrNull()
-            loadCurrent()
+            clearSelection()
+            observeCurrentChecklist()
         }
         persist()
     }
@@ -344,90 +417,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Full reload of the current open checklist: re-reads every checklist and
-     * node file in the workspace from disk, then re-derives done-state.
-     *
-     * This is the expensive path — a whole-workspace SAF scan — and is only
-     * needed when the *structure* may have changed: opening or switching
-     * checklists, or after a create / edit / reorder. Marking an item done or
-     * not-done rewrites no checklist file, so those paths use the far cheaper
-     * [refreshDoneStates] instead.
+     * Watch the current checklist. Switching lists is now a change of SQL query,
+     * not a filesystem scan, so the new content is on screen essentially at once.
      */
-    fun loadCurrent() {
-        val open = _currentItem.value ?: run { _loaded.value = null; return }
-        viewModelScope.launch {
-            _busy.value = true
-            val all = runCatching { items.loadChecklists(open.workspaceUri) }
-                .getOrDefault(emptyList())
-            val checklist = all.firstOrNull { it.docId == open.checklistDocId }
-            if (checklist == null) {
-                // The checklist's folder has vanished; drop it silently.
-                closeOpenItem(open)
-                _loaded.value = null
-            } else {
-                val states = runCatching { items.loadDoneStates(open.workspaceUri) }
-                    .getOrDefault(emptyMap())
-                // This read is authoritative, so it supersedes any optimistic
-                // patch and any refresh still in flight.
-                markGeneration++
-                _loaded.value = LoadedChecklist(checklist, doneByDocId(checklist, states))
-                // If an item is being inspected, refresh its resolved state.
-                _selectedItem.value?.let { sel ->
-                    val fresh = checklist.nodes.firstOrNull { it.docId == sel.item.docId }
-                    if (fresh != null) refreshSelectedItem(open.workspaceUri, checklist, fresh)
-                }
+    private fun observeCurrentChecklist() {
+        checklistJob?.cancel()
+        val open = _currentItem.value
+        if (open == null) {
+            _loaded.value = null
+            return
+        }
+        checklistJob = viewModelScope.launch {
+            store.observeChecklistView(open.workspaceUri, open.checklistDocId).collect { view ->
+                _loaded.value = view?.let { LoadedChecklist(it.checklist, it.done) }
             }
-            _busy.value = false
         }
-    }
-
-    /**
-     * Re-derive done-state for the *already-loaded* checklist by replaying the
-     * logs, without re-scanning the workspace's files: the structure in memory is
-     * still valid because a mark/unmark only appends to a log.
-     *
-     * This is the authoritative follow-up to an optimistic update — it corrects
-     * the in-memory guess if another client has written to the logs. It is
-     * dropped if a newer mutation has landed since [generation] was taken.
-     */
-    private suspend fun refreshDoneStates(generation: Long) {
-        val open = _currentItem.value ?: return
-        val before = _loaded.value ?: return
-        val states = runCatching { items.loadDoneStates(open.workspaceUri) }
-            .getOrNull() ?: return
-        if (generation != markGeneration) return
-        val current = _loaded.value ?: return
-        // Bail if the user switched checklists while we were reading.
-        if (current.checklist.docId != before.checklist.docId) return
-        _loaded.value = current.copy(done = doneByDocId(current.checklist, states))
-    }
-
-    /**
-     * Project the workspace-wide done-state map onto one checklist's nodes. The
-     * logs key on workspace-relative folder names; the UI map keys on docId for
-     * cheap in-memory lookup.
-     */
-    private fun doneByDocId(
-        checklist: Checklist,
-        states: Map<String, DoneState>,
-    ): Map<String, DoneState> {
-        val perItem = HashMap<String, DoneState>()
-        for (n in checklist.nodes) {
-            states["${checklist.folderName}\u0000${n.folderName}"]
-                ?.let { perItem[n.docId] = it }
-        }
-        return perItem
-    }
-
-    /**
-     * Patch one item's done-state in the loaded checklist, in memory only.
-     * A null [state] removes the entry (restoring "never marked").
-     */
-    private fun applyDoneState(itemDocId: String, state: DoneState?) {
-        val current = _loaded.value ?: return
-        val next = current.done.toMutableMap()
-        if (state == null) next.remove(itemDocId) else next[itemDocId] = state
-        _loaded.value = current.copy(done = next)
     }
 
     // --- item inspection (Info tab) --------------------------------------- //
@@ -435,158 +439,81 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Tap an item in the checklist → inspect it on the Info tab. */
     fun inspectItem(item: Node) {
         val loaded = _loaded.value ?: return
-        val open = _currentItem.value ?: return
         _tab.value = Tab.INFO
-        viewModelScope.launch {
-            refreshSelectedItem(open.workspaceUri, loaded.checklist, item)
-        }
+        observeSelection(loaded.checklist.folderName, item.folderName)
     }
 
-    private suspend fun refreshSelectedItem(
-        workspaceUri: Uri,
-        checklist: Checklist,
-        item: Node,
-    ) {
-        val states = runCatching { items.loadDoneStates(workspaceUri) }
-            .getOrDefault(emptyMap())
-        val done = states["${checklist.folderName}\u0000${item.folderName}"]
-        val log = runCatching {
-            items.loadItemLog(workspaceUri, checklist.folderName, item.folderName)
-        }.getOrDefault(emptyList())
-        _selectedItem.value = SelectedItem(item, done, log)
+    private fun clearSelection() {
+        selectionJob?.cancel()
+        selectedChecklistFolder = null
+        selectedNodeFolder = null
+        _selectedItem.value = null
     }
 
     /**
-     * Toggle the currently-inspected item's done-state (from the Info tab).
-     *
-     * Both tabs update optimistically and synchronously: we already know what the
-     * new state will be, and the mark rewrites no checklist file, so there is
-     * nothing to read back before painting. The log append then happens in the
-     * background, followed by a cheap done-state reconcile — no workspace
-     * re-scan. If the write fails the patch is rolled back and the user is told.
+     * Watch one node's detail. Keyed on folder names because that is what the log
+     * is keyed on; a rename changes both the folder name and the SAF document id,
+     * so callers re-target explicitly after a structural write rather than
+     * relying on either being stable.
      */
+    private fun observeSelection(checklistFolder: String, nodeFolder: String) {
+        selectionJob?.cancel()
+        val open = _currentItem.value ?: return
+        selectedChecklistFolder = checklistFolder
+        selectedNodeFolder = nodeFolder
+        selectionJob = viewModelScope.launch {
+            store.observeNodeView(
+                treeUri = open.workspaceUri,
+                checklistDocId = open.checklistDocId,
+                checklistFolder = checklistFolder,
+                nodeFolderName = nodeFolder,
+            ).collect { view ->
+                _selectedItem.value = view?.let { SelectedItem(it.node, it.done, it.log) }
+            }
+        }
+    }
+
+    /** Re-point the Info tab after a rename moved the checklist or node folder. */
+    private fun retargetSelection(newChecklistFolder: String?, newNodeFolder: String?) {
+        val checklistFolder = newChecklistFolder ?: selectedChecklistFolder ?: return
+        val nodeFolder = newNodeFolder ?: selectedNodeFolder ?: return
+        observeSelection(checklistFolder, nodeFolder)
+    }
+
+    // --- done-state mutations --------------------------------------------- //
+    //
+    // Each of these updates the projection and then writes to the filesystem
+    // immediately, in the same coroutine — nothing is queued or batched, so a
+    // change can't be stranded by a scheduler. The UI updates from the Room
+    // query, and a failed write rolls the projection back before reporting.
+
+    /** Toggle the currently-inspected item's done-state (from the Info tab). */
     fun toggleSelectedItemDone() {
         val sel = _selectedItem.value ?: return
         val loaded = _loaded.value ?: return
         val open = _currentItem.value ?: return
-        val item = sel.item
         val newDone = !(sel.done?.done ?: false)
-        val stamp = ItemRepository.stampNow()
-        val previousDone = loaded.done[item.docId]
-        val newState = DoneState(newDone, if (newDone) stamp.iso else null)
-        val action = if (newDone) ActionType.MARKED_DONE else ActionType.MARKED_NOT_DONE
-
-        // 1. Optimistic: Tab 2's tick and Tab 3's panel, this frame. The log row
-        //    we prepend is exactly the one we're about to write.
-        applyDoneState(item.docId, newState)
-        _selectedItem.value = sel.copy(
-            done = newState,
-            log = listOf(LogRow(stamp.iso, action.label)) + sel.log,
-        )
-        val generation = ++markGeneration
-
-        // 2. Persist, then reconcile against the logs in the background.
         viewModelScope.launch {
-            val ok = runCatching {
-                items.setItemDone(open.workspaceUri, loaded.checklist, item, newDone, stamp)
-            }.isSuccess
-            if (!ok) {
-                if (generation == markGeneration) {
-                    applyDoneState(item.docId, previousDone)
-                    _selectedItem.value = sel
-                    _message.value = "Could not save that change."
-                }
-                return@launch
-            }
-            refreshDoneStates(generation)
+            val ok = store.setItemDone(open.workspaceUri, loaded.checklist, sel.item, newDone)
+            if (!ok) _message.value = "Could not save that change to the workspace."
         }
     }
 
-    // --- done-state mutations --------------------------------------------- //
-
-    /**
-     * Set one item's done-state directly. Optimistic, with the same
-     * roll-back-and-reconcile pattern as the Info-tab toggle.
-     */
     fun setItemDone(item: Node, done: Boolean) {
         val loaded = _loaded.value ?: return
         val open = _currentItem.value ?: return
-        val stamp = ItemRepository.stampNow()
-        val previousDone = loaded.done[item.docId]
-        val previousSelected = _selectedItem.value
-        val newState = DoneState(done, if (done) stamp.iso else null)
-        val action = if (done) ActionType.MARKED_DONE else ActionType.MARKED_NOT_DONE
-
-        applyDoneState(item.docId, newState)
-        // Keep the Info tab in step if it happens to be showing this item.
-        previousSelected?.takeIf { it.item.docId == item.docId }?.let { sel ->
-            _selectedItem.value = sel.copy(
-                done = newState,
-                log = listOf(LogRow(stamp.iso, action.label)) + sel.log,
-            )
-        }
-        val generation = ++markGeneration
-
         viewModelScope.launch {
-            val ok = runCatching {
-                items.setItemDone(open.workspaceUri, loaded.checklist, item, done, stamp)
-            }.isSuccess
-            if (!ok) {
-                if (generation == markGeneration) {
-                    applyDoneState(item.docId, previousDone)
-                    if (previousSelected?.item?.docId == item.docId) {
-                        _selectedItem.value = previousSelected
-                    }
-                    _message.value = "Could not save that change."
-                }
-                return@launch
-            }
-            refreshDoneStates(generation)
+            val ok = store.setItemDone(open.workspaceUri, loaded.checklist, item, done)
+            if (!ok) _message.value = "Could not save that change to the workspace."
         }
     }
 
-    /**
-     * Clear every item's done-state in the current checklist. Optimistic: all
-     * items flip to not-done immediately, then one row per item is appended and
-     * the result reconciled.
-     */
     fun markAllNotDone() {
         val loaded = _loaded.value ?: return
         val open = _currentItem.value ?: return
-        val stamp = ItemRepository.stampNow()
-        val previousDone = loaded.done
-        val previousSelected = _selectedItem.value
-        val itemNodes = loaded.checklist.nodes.filter { it.kind == NodeKind.ITEM }
-        val cleared = DoneState(false, null)
-
-        val next = loaded.done.toMutableMap()
-        for (n in itemNodes) next[n.docId] = cleared
-        _loaded.value = loaded.copy(done = next)
-        previousSelected
-            ?.takeIf { sel -> itemNodes.any { it.docId == sel.item.docId } }
-            ?.let { sel ->
-                _selectedItem.value = sel.copy(
-                    done = cleared,
-                    log = listOf(
-                        LogRow(stamp.iso, ActionType.MARKED_NOT_DONE_BULK.label)
-                    ) + sel.log,
-                )
-            }
-        val generation = ++markGeneration
-
         viewModelScope.launch {
-            val ok = runCatching {
-                items.markAllNotDone(open.workspaceUri, loaded.checklist, stamp)
-            }.isSuccess
-            if (!ok) {
-                if (generation == markGeneration) {
-                    _loaded.value = _loaded.value?.copy(done = previousDone)
-                    _selectedItem.value = previousSelected
-                    _message.value = "Could not clear the checklist."
-                }
-                return@launch
-            }
-            refreshDoneStates(generation)
+            val ok = store.markAllNotDone(open.workspaceUri, loaded.checklist)
+            if (!ok) _message.value = "Could not clear the checklist in the workspace."
         }
     }
 
@@ -596,11 +523,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun createChecklist(cid: String, title: String, description: String) {
         val ws = _browse.value.workspace ?: return
         viewModelScope.launch {
-            val res = runCatching {
-                items.createChecklist(ws.treeUri, cid, title, description)
-            }.getOrElse { ItemRepository.WriteResult(false, "Could not create the checklist.") }
+            val res = store.createChecklist(ws.treeUri, cid, title, description)
             if (!res.ok) _message.value = res.error
-            loadAllChecklists(ws)
         }
     }
 
@@ -609,11 +533,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val loaded = _loaded.value ?: return
         val open = _currentItem.value ?: return
         viewModelScope.launch {
-            val res = runCatching {
-                items.createNode(open.workspaceUri, loaded.checklist, title, description, kind)
-            }.getOrElse { ItemRepository.WriteResult(false, "Could not create the item.") }
+            val res = store.createNode(open.workspaceUri, loaded.checklist, title, description, kind)
             if (!res.ok) _message.value = res.error
-            loadCurrent()
         }
     }
 
@@ -622,25 +543,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val loaded = _loaded.value ?: return
         val open = _currentItem.value ?: return
         viewModelScope.launch {
-            val res = runCatching {
-                items.editChecklist(open.workspaceUri, loaded.checklist, cid, title, description)
-            }.getOrElse { ItemRepository.WriteResult(false, "Could not update the checklist.") }
-            if (res.ok) {
-                // Identity may have changed; update the open handle so reloads resolve.
-                val fresh = items.loadChecklists(open.workspaceUri)
-                    .firstOrNull { it.cid == cid.trim() }
-                if (fresh != null) {
-                    val updated = open.copy(
-                        checklistDocId = fresh.docId,
-                        checklistCid = fresh.cid,
-                        checklistTitle = fresh.title,
-                    )
-                    replaceCurrent(open, updated)
-                }
-            } else {
+            val res = store.editChecklist(open.workspaceUri, loaded.checklist, cid, title, description)
+            if (!res.ok) {
                 _message.value = res.error
+                return@launch
             }
-            loadCurrent()
+            // A rename allocates a new document id and folder name; follow both so
+            // the open handle, the checklist observation and the Info tab stay valid.
+            val updated = open.copy(
+                checklistDocId = res.docId ?: open.checklistDocId,
+                checklistCid = cid.trim(),
+                checklistTitle = title.trim(),
+            )
+            replaceCurrent(open, updated)
+            observeCurrentChecklist()
+            retargetSelection(res.folderName, null)
         }
     }
 
@@ -649,15 +566,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val loaded = _loaded.value ?: return
         val open = _currentItem.value ?: return
         viewModelScope.launch {
-            val res = runCatching {
-                items.editNode(open.workspaceUri, loaded.checklist, node, title, description)
-            }.getOrElse { ItemRepository.WriteResult(false, "Could not update the item.") }
-            if (!res.ok) _message.value = res.error
-            loadCurrent()
-            // Re-inspect the (possibly renamed) node so the Info tab stays in sync.
-            val fresh = _loaded.value?.checklist?.nodes
-                ?.firstOrNull { it.title.trim().equals(title.trim(), ignoreCase = true) }
-            if (fresh != null) refreshSelectedItem(open.workspaceUri, _loaded.value!!.checklist, fresh)
+            val res = store.editNode(open.workspaceUri, loaded.checklist, node, title, description)
+            if (!res.ok) {
+                _message.value = res.error
+                return@launch
+            }
+            if (selectedNodeFolder == node.folderName) {
+                retargetSelection(null, res.folderName)
+            }
         }
     }
 
@@ -666,11 +582,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val loaded = _loaded.value ?: return
         val open = _currentItem.value ?: return
         viewModelScope.launch {
-            val res = runCatching {
-                items.reorderNodes(open.workspaceUri, loaded.checklist, orderedFolderNames)
-            }.getOrElse { ItemRepository.WriteResult(false, "Could not reorder the items.") }
-            if (!res.ok) _message.value = res.error
-            loadCurrent()
+            val res = store.reorderNodes(open.workspaceUri, loaded.checklist, orderedFolderNames)
+            if (!res.ok) {
+                _message.value = res.error
+                return@launch
+            }
+            // Renumbering renames folders; if the inspected node moved, follow it.
+            val moved = res.renames.firstOrNull { it.first == selectedNodeFolder }
+            if (moved != null) retargetSelection(null, moved.second)
         }
     }
 
@@ -685,31 +604,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun runSearch(query: String) {
         val ws = _browse.value.workspace ?: return
         viewModelScope.launch {
-            if (query.isBlank()) {
-                _searchResults.value = emptyList()
-                return@launch
+            _searchResults.value = if (query.isBlank()) {
+                emptyList()
+            } else {
+                runCatching { store.search(ws.treeUri, query) }.getOrDefault(emptyList())
             }
-            val fromIndex = index.search(ws.treeUri, query)
-            _searchResults.value = fromIndex ?: liveSearchFallback(ws, query)
         }
     }
 
-    private suspend fun liveSearchFallback(ws: Workspace, query: String): List<SearchHit> {
-        val all = items.loadChecklists(ws.treeUri)
-        val q = query.trim().lowercase()
-        return all.filter { c ->
-            c.title.lowercase().contains(q) ||
-                c.description.lowercase().contains(q) ||
-                c.nodes.any {
-                    it.title.lowercase().contains(q) || it.description.lowercase().contains(q)
-                }
-        }.map {
-            SearchHit(ws.treeUri.toString(), it.docId, it.cid, it.title, "")
-        }
-    }
-
+    /** Rebuild a workspace's projection from disk, showing the loading screen. */
     fun regenerateIndex() {
         val ws = _browse.value.workspace ?: return
-        viewModelScope.launch { runCatching { index.regenerate(ws.treeUri) } }
+        viewModelScope.launch { ingest(listOf(ws)) }
+    }
+
+    private companion object {
+        const val MAX_PROGRESS_LINES = 400
     }
 }

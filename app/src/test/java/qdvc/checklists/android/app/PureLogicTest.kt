@@ -4,7 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import qdvc.checklists.android.app.data.IndexRepository
+import qdvc.checklists.android.app.data.WorkspaceStore
 import qdvc.checklists.android.app.util.Csv
 import qdvc.checklists.android.app.util.Markdown
 import qdvc.checklists.android.app.util.Naming
@@ -119,16 +119,16 @@ class CsvTest {
 class QueryTest {
     @Test
     fun buildMatchProducesPrefixTerms() {
-        assertEquals("foo* bar*", IndexRepository.buildMatch("foo bar"))
+        assertEquals("foo* bar*", WorkspaceStore.buildMatch("foo bar"))
     }
 
     @Test
     fun buildMatchStripsOperators() {
-        assertEquals("foo*", IndexRepository.buildMatch("  \"foo\"  "))
+        assertEquals("foo*", WorkspaceStore.buildMatch("  \"foo\"  "))
     }
 
     @Test
     fun buildMatchNullForEmpty() {
-        assertNull(IndexRepository.buildMatch("   "))
+        assertNull(WorkspaceStore.buildMatch("   "))
     }
 }

@@ -29,8 +29,11 @@ checklists, headings, and items. Completion state and an audit trail live in a
   checklists/items must not collide with an existing ID or name (the studio's
   exact-ID, case-insensitive-title rule). Every create, edit, rename, and
   reorder is recorded in the log.
-- Full-text search over a workspace (via the Home menu), backed by an on-device
-  Room FTS4 index with a live-scan fallback.
+- Full-text search over a workspace (via the Home menu), served from the
+  on-device projection (Room FTS4).
+- A **loading screen** on launch: the app reads every workspace from disk once,
+  narrating its progress as a terminal-style transcript, and only then shows the
+  UI. After that, nothing in normal use traverses the filesystem to read.
 - Light / dark / automatic theming with selectable colour themes (incl. a
   pure-black OLED theme); system bars match the app surface.
 
@@ -73,10 +76,14 @@ daily logs:
 - `log-YYYY-MM-DD.csv` — **one file per day**. Every action appends a row:
   `timestamp`, `action`, `client`, `checklist_folder`, `item_folder`.
 
-There is no `state.csv`. **The daily logs are the single source of truth**: the
-current done-state of every item is reconstructed by replaying all the logs in
-timestamp order (last write wins). For speed the app keeps an on-device index
-(see below) as a cache, with this live replay as the fallback.
+There is no `state.csv`. **The daily logs are the source of truth on disk**: the
+done-state of every item is derived by replaying all the logs in timestamp order
+(last write wins). That replay happens once per launch, into the app's local
+projection (see below); the UI then reads completion from there.
+
+Marks are appended to today's log **immediately** when you tick something — in
+append mode, so adding a row costs one row's worth of writing rather than
+rewriting the day's file.
 
 The `client` column records which app wrote the row; this app writes
 `android-app`.
@@ -96,16 +103,33 @@ the app rewrites every daily log — replacing the old `checklist_folder` /
 `item_folder` values with the new ones — so historical records stay attached to
 the renamed thing. The rename itself is also logged.
 
-## The index and its status page
+## The local projection and its status page
 
-Each workspace has an on-device index (Room). It is a disposable cache: it backs
-full-text search and speeds up state lookups, and is reconciled quietly when a
-workspace opens, with a live scan/replay as the fallback. The **Index status**
-page (reached from the checklists toolbar menu) shows whether the index is
-Ready / Updating / Not built, how many checklists are indexed, when it last
-regenerated, and offers a **Regenerate now** button that rebuilds it from
-scratch. Regenerating only touches the app's private index — your files are
-never modified.
+Your workspace folders remain the system of record. On launch the app reads them
+in full — every checklist, every node, every log row — into a local Room
+database, and from then on **the UI reads only from that projection**. Opening a
+checklist, switching between open checklists, ticking an item and viewing an
+item's history are all SQL queries, so they don't touch the Storage Access
+Framework at all.
+
+Writes go the other way, and go immediately. Every create, edit, reorder and mark
+is written to the workspace as soon as you perform it — never queued, never
+batched, never handed to a background scheduler — because the files are shared
+with the desktop Studio and a deferred write is a write that can be lost. Marks
+update the projection first (so the UI responds at once) and then append to the
+log; if that append fails, the projection is rolled back and you're told.
+Structural changes are written to disk first, since that is where naming and
+uniqueness are validated, and the projection is then refreshed from the result.
+
+Because the projection never holds anything that doesn't already exist on disk,
+it stays disposable: it can be deleted or rebuilt without data loss. The **Index
+status** page (from the checklists toolbar menu) shows how many checklists are
+indexed and when it was last rebuilt, and offers **Regenerate now**, which
+re-reads that workspace from disk behind the same loading screen. Regenerating
+only touches the app's private projection — your files are never modified.
+
+External edits (from the desktop Studio, say) are picked up on the next launch or
+by **Regenerate now**; the app does not currently watch the folders while running.
 
 ## Deviations from the spec
 
@@ -125,9 +149,8 @@ state is app-owned and lives separately), so:
   is the desktop Studio's job. Everything else (SAF rules, back-handling, the
   slide animation, Room FTS4 index, JSON themes, system-bar matching) follows
   Part B.
-- The search index still exists and powers search, but its status/regenerate
-  screen was dropped from the UI to keep Home to two levels; the index is
-  reconciled quietly in the background.
+- The index status/regenerate screen lives inside the all-checklists view rather
+  than as its own Home level, keeping Home to two levels.
 
 ## Build
 
