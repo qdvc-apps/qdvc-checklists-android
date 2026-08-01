@@ -67,6 +67,7 @@ import qdvc.checklists.android.app.model.Node
 import qdvc.checklists.android.app.model.NodeKind
 import qdvc.checklists.android.app.ui.components.EmptyState
 import qdvc.checklists.android.app.ui.components.OpenChevrons
+import qdvc.checklists.android.app.ui.components.rememberHaptics
 import qdvc.checklists.android.app.ui.components.rememberReorderState
 import qdvc.checklists.android.app.ui.components.reorderable
 import qdvc.checklists.android.app.ui.dialogs.ChecklistFormDialog
@@ -118,6 +119,7 @@ fun ChecklistScreen(
     }
 
     val checklist = loaded.checklist
+    val haptics = rememberHaptics()
     var confirmBulk by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     var showEdit by remember { mutableStateOf(false) }
@@ -203,7 +205,7 @@ fun ChecklistScreen(
                         skippedCount = skippedCount,
                         total = items.size,
                         showBulkClear = true,
-                        onMarkAllNotDone = { confirmBulk = true },
+                        onMarkAllNotDone = { haptics.tap(); confirmBulk = true },
                     )
                     HorizontalDivider(
                         color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
@@ -213,17 +215,18 @@ fun ChecklistScreen(
                     item { EmptyState("This checklist has no items yet.") }
                 }
                 items(checklist.nodes, key = { it.docId }) { node ->
+                    // Both kinds navigate to the Info tab, so both confirm the tap.
                     when (node.kind) {
                         NodeKind.HEADING -> HeadingRow(
                             node = node,
                             showChevron = node.docId == selectedItemDocId,
-                            onTap = { onInspectItem(node) },
+                            onTap = { haptics.tap(); onInspectItem(node) },
                         )
                         NodeKind.ITEM -> ItemRow(
                             node = node,
                             state = loaded.done[node.docId],
                             showChevron = node.docId == selectedItemDocId,
-                            onTap = { onInspectItem(node) },
+                            onTap = { haptics.tap(); onInspectItem(node) },
                         )
                     }
                 }

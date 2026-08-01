@@ -60,6 +60,7 @@ import qdvc.checklists.android.app.model.NodeKind
 import qdvc.checklists.android.app.model.Workspace
 import qdvc.checklists.android.app.ui.components.EmptyState
 import qdvc.checklists.android.app.ui.components.ListRow
+import qdvc.checklists.android.app.ui.components.rememberHaptics
 import qdvc.checklists.android.app.ui.components.OpenChevrons
 import qdvc.checklists.android.app.ui.components.SlideNavHost
 import qdvc.checklists.android.app.ui.dialogs.ChecklistFormDialog
@@ -293,6 +294,7 @@ private fun ChecklistList(
         EmptyState("No checklists found in this workspace.")
         return
     }
+    val haptics = rememberHaptics()
     LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
         items(checklists, key = { it.docId }) { c ->
             val itemCount = c.nodes.count { it.kind == NodeKind.ITEM }
@@ -301,7 +303,7 @@ private fun ChecklistList(
                 title = c.title.ifBlank { c.cid },
                 itemCount = itemCount,
                 showChevron = c.docId == openDocId,
-                onClick = { onOpen(c) },
+                onClick = { haptics.tap(); onOpen(c) },
             )
         }
     }
@@ -366,6 +368,7 @@ private fun SearchSurface(
     onOpen: (SearchHit) -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
+    val haptics = rememberHaptics()
     Column(Modifier.fillMaxSize()) {
         OutlinedTextField(
             value = query,
@@ -387,7 +390,7 @@ private fun SearchSurface(
                         title = hit.title.ifBlank { hit.cid },
                         itemCount = null,
                         showChevron = false,
-                        onClick = { onOpen(hit) },
+                        onClick = { haptics.tap(); onOpen(hit) },
                     )
                 }
             }

@@ -41,6 +41,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import qdvc.checklists.android.app.data.SettingsRepository
+import qdvc.checklists.android.app.ui.components.rememberHaptics
 import qdvc.checklists.android.app.model.OpenItem
 import qdvc.checklists.android.app.ui.components.EmptyState
 import qdvc.checklists.android.app.ui.components.OpenChevrons
@@ -55,6 +56,7 @@ fun SwitcherScreen(
 ) {
     // The jump list is always sorted by checklist ID.
     val sorted = remember(openItems) { openItems.sortedBy { it.checklistCid } }
+    val haptics = rememberHaptics()
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -79,7 +81,7 @@ fun SwitcherScreen(
                 SwitcherRow(
                     item = item,
                     isCurrent = SettingsRepository.openItemKey(item) == currentKey,
-                    onSelect = { onSelect(item) },
+                    onSelect = { haptics.tap(); onSelect(item) },
                     onClose = { onClose(item) },
                 )
             }

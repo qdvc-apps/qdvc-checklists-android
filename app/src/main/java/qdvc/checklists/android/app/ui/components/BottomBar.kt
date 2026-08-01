@@ -37,10 +37,13 @@ private fun androidx.compose.foundation.layout.RowScope.NavItem(
     enabled: Boolean,
     onSelect: (Tab) -> Unit,
 ) {
+    // Only a tab that can actually be entered gives feedback; a disabled one
+    // buzzing would suggest something happened when nothing did.
+    val haptics = rememberHaptics()
     NavigationBarItem(
         selected = current == tab,
         enabled = enabled,
-        onClick = { onSelect(tab) },
+        onClick = { haptics.tap(); onSelect(tab) },
         icon = { Icon(icon, contentDescription = label) },
         label = { Text(label) },
     )

@@ -25,6 +25,8 @@ class ReorderState(
     private val listState: LazyListState,
     private val scope: CoroutineScope,
     private val onMove: (from: Int, to: Int) -> Unit,
+    private val onPickUp: () -> Unit = {},
+    private val onDrop: () -> Unit = {},
 ) {
     /** Index of the row under the finger, or null when nothing is being dragged. */
     var draggingIndex by mutableStateOf<Int?>(null)
@@ -40,6 +42,9 @@ class ReorderState(
         val hit = visible.firstOrNull { offsetY >= it.offset && offsetY <= it.offset + it.size }
         draggingIndex = hit?.index
         dragOffset = 0f
+        // Only when a row was actually grabbed — a long press on empty space
+        // below the last item starts no drag and should feel like nothing.
+        if (hit != null) onPickUp()
     }
 
     fun onDrag(deltaY: Float) {
@@ -62,8 +67,10 @@ class ReorderState(
     }
 
     fun onDragEnd() {
+        val wasDragging = draggingIndex != null
         draggingIndex = null
         dragOffset = 0f
+        if (wasDragging) onDrop()
     }
 
     /** Nudge the list when the dragged row approaches an edge of the viewport. */
@@ -96,8 +103,15 @@ fun rememberReorderState(
     val scope = rememberCoroutineScope()
     // Keep the latest callback without rebuilding the state on every recomposition.
     val handler = rememberUpdatedState(onMove)
+    val haptics = rememberHaptics()
     return remember(listState) {
-        ReorderState(listState, scope) { from, to -> handler.value(from, to) }
+        ReorderState(
+            listState = listState,
+            scope = scope,
+            onMove = { from, to -> handler.value(from, to) },
+            onPickUp = haptics::pickUp,
+            onDrop = haptics::drop,
+        )
     }
 }
 

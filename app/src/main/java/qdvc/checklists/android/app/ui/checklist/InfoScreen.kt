@@ -46,6 +46,7 @@ import qdvc.checklists.android.app.model.LogRow
 import qdvc.checklists.android.app.model.Node
 import qdvc.checklists.android.app.model.NodeKind
 import qdvc.checklists.android.app.ui.components.EmptyState
+import qdvc.checklists.android.app.ui.components.rememberHaptics
 import qdvc.checklists.android.app.ui.dialogs.EditNodeDialog
 import qdvc.checklists.android.app.util.DateFormatting
 
@@ -59,6 +60,7 @@ fun InfoScreen(
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     var showEdit by remember { mutableStateOf(false) }
+    val haptics = rememberHaptics()
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -167,7 +169,7 @@ fun InfoScreen(
                         )
                         if (resolved) {
                             OutlinedButton(
-                                onClick = onToggleDone,
+                                onClick = { haptics.tap(); onToggleDone() },
                                 modifier = Modifier.padding(top = 12.dp),
                             ) {
                                 Icon(
@@ -179,7 +181,7 @@ fun InfoScreen(
                             }
                         } else {
                             Button(
-                                onClick = onToggleDone,
+                                onClick = { haptics.tap(); onToggleDone() },
                                 modifier = Modifier.padding(top = 12.dp),
                             ) {
                                 Icon(
