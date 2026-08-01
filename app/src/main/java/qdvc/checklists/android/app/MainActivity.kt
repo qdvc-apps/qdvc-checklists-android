@@ -93,6 +93,21 @@ private fun AppRoot(vm: AppViewModel) {
     }
 }
 
+/**
+ * A [LazyListState] retained per [key] for as long as this screen lives, rather
+ * than per composition, so a list returns to where the user left it.
+ *
+ * [retain] bounds the memory: positions for keys no longer in that set are
+ * dropped, so a long session browsing many checklists doesn't accumulate them.
+ */
+@Composable
+private fun rememberKeyedListState(key: String?, retain: Set<String>): LazyListState {
+    val states = remember { mutableMapOf<String, LazyListState>() }
+    val fallback = rememberLazyListState()
+    LaunchedEffect(retain) { states.keys.retainAll(retain) }
+    return key?.let { states.getOrPut(it) { LazyListState() } } ?: fallback
+}
+
 @Composable
 private fun AppScaffold(vm: AppViewModel) {
     val context = LocalContext.current
@@ -116,19 +131,21 @@ private fun AppScaffold(vm: AppViewModel) {
 
     var showSettings by remember { mutableStateOf(false) }
 
-    // Tab 2's scroll position. Held here, above the AnimatedContent that swaps
-    // tabs, because that discards the outgoing tab's composition — anything
-    // remembered inside ChecklistScreen would reset to the top on every visit.
-    // Keyed per checklist so switching via Jump doesn't inherit someone else's
-    // position, and pruned to what's open so it can't grow without bound.
-    val checklistScroll = remember { mutableMapOf<String, LazyListState>() }
-    val fallbackScroll = rememberLazyListState()
-    val checklistListState = current?.checklistDocId
-        ?.let { docId -> checklistScroll.getOrPut(docId) { LazyListState() } }
-        ?: fallbackScroll
-    LaunchedEffect(openItems) {
-        checklistScroll.keys.retainAll(openItems.map { it.checklistDocId }.toSet())
-    }
+    // Scroll positions for the tabs that hold long lists. These are held here,
+    // above the AnimatedContent that swaps tabs, because that discards the
+    // outgoing tab's composition — anything remembered inside a tab would reset
+    // to the top on every visit. Home needs it for the same reason twice over,
+    // since its own SlideNavHost also swaps its levels in and out.
+    val checklistListState = rememberKeyedListState(
+        key = current?.checklistDocId,
+        retain = openItems.map { it.checklistDocId }.toSet(),
+    )
+    val homeChecklistsListState = rememberKeyedListState(
+        key = browse.workspace?.treeUri?.toString(),
+        retain = workspaces.map { it.treeUri.toString() }.toSet(),
+    )
+    // Only ever one workspace list, so it needs no key.
+    val workspacesListState = rememberLazyListState()
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -212,6 +229,8 @@ private fun AppScaffold(vm: AppViewModel) {
                     Tab.HOME -> HomeScreen(
                         browse = browse,
                         workspaces = workspaces,
+                        workspacesListState = workspacesListState,
+                        checklistsListState = homeChecklistsListState,
                         allChecklists = allChecklists,
                         searchResults = searchResults,
                         openChecklistDocId = current?.checklistDocId,

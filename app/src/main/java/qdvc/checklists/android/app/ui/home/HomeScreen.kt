@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material.icons.Icons
@@ -69,6 +70,10 @@ import qdvc.checklists.android.app.util.DateFormatting
 fun HomeScreen(
     browse: BrowseState,
     workspaces: List<Workspace>,
+    /** Hoisted by the caller so leaving this tab doesn't reset the scroll. */
+    workspacesListState: LazyListState,
+    /** Hoisted per workspace, for the same reason. */
+    checklistsListState: LazyListState,
     allChecklists: List<Checklist>,
     searchResults: List<SearchHit>,
     openChecklistDocId: String?,
@@ -181,14 +186,16 @@ fun HomeScreen(
         ) { depth ->
             when (depth) {
                 BrowseMode.WORKSPACES.depth -> WorkspaceList(
-                    workspaces, onAddWorkspace, onOpenWorkspace, onRemoveWorkspace
+                    workspaces, workspacesListState,
+                    onAddWorkspace, onOpenWorkspace, onRemoveWorkspace,
                 )
                 else -> when (browse.surface) {
                     ChecklistsSurface.SEARCH -> SearchSurface(searchResults, onSearch, onOpenHit)
                     ChecklistsSurface.INDEX_STATUS ->
                         IndexStatusSurface(indexStatus, onRegenerateIndex)
-                    ChecklistsSurface.LIST ->
-                        ChecklistList(allChecklists, openChecklistDocId, onOpenChecklist)
+                    ChecklistsSurface.LIST -> ChecklistList(
+                        allChecklists, checklistsListState, openChecklistDocId, onOpenChecklist
+                    )
                 }
             }
         }
@@ -213,6 +220,7 @@ fun HomeScreen(
 @Composable
 private fun WorkspaceList(
     workspaces: List<Workspace>,
+    listState: LazyListState,
     onAdd: () -> Unit,
     onOpen: (Workspace) -> Unit,
     onRemove: (Workspace) -> Unit,
@@ -229,7 +237,7 @@ private fun WorkspaceList(
             EmptyState("No workspaces yet. Add a Checklist Studio folder to get started.")
         }
     } else {
-        LazyColumn(Modifier.fillMaxSize()) {
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
             item {
                 ListRow(
                     title = "Add a workspace",
@@ -277,6 +285,7 @@ private fun WorkspaceList(
 @Composable
 private fun ChecklistList(
     checklists: List<Checklist>,
+    listState: LazyListState,
     openDocId: String?,
     onOpen: (Checklist) -> Unit,
 ) {
@@ -284,7 +293,7 @@ private fun ChecklistList(
         EmptyState("No checklists found in this workspace.")
         return
     }
-    LazyColumn(Modifier.fillMaxSize()) {
+    LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
         items(checklists, key = { it.docId }) { c ->
             val itemCount = c.nodes.count { it.kind == NodeKind.ITEM }
             ChecklistRow(

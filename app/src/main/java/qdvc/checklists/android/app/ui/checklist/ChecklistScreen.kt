@@ -12,11 +12,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -525,6 +527,50 @@ private fun HeadingRow(
 }
 
 private val MutedText = Color(0xFF7F7F7F)
+private val StateIconSize = 24.dp
+private val SkippedGlyphSize = 15.dp
+
+/**
+ * The leading state marker on an item row.
+ *
+ * Done uses Material's filled [Icons.Filled.CheckCircle]: a solid disc with the
+ * tick cut out of it, so the tick shows the row behind. Material has no
+ * equivalent with a fast-forward cut out, so skipped composes one — a muted disc
+ * the same size, with the glyph painted in the row's own background colour, which
+ * reads as punched through in exactly the same way. Done is accented and skipped
+ * is muted, so a skipped item looks settled without looking like an achievement.
+ */
+@Composable
+private fun ItemStateIcon(state: ItemState, modifier: Modifier = Modifier) {
+    when (state) {
+        ItemState.DONE -> Icon(
+            Icons.Filled.CheckCircle,
+            contentDescription = "Done",
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = modifier.size(StateIconSize),
+        )
+        ItemState.SKIPPED -> Box(
+            modifier = modifier
+                .size(StateIconSize)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.onSurfaceVariant),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Filled.FastForward,
+                contentDescription = "Skipped",
+                tint = MaterialTheme.colorScheme.background,
+                modifier = Modifier.size(SkippedGlyphSize),
+            )
+        }
+        ItemState.NOT_DONE -> Icon(
+            Icons.Filled.RadioButtonUnchecked,
+            contentDescription = "Not done",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = modifier.size(StateIconSize),
+        )
+    }
+}
 
 @Composable
 private fun ItemRow(
@@ -544,26 +590,7 @@ private fun ItemRow(
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                imageVector = when (itemState) {
-                    ItemState.DONE -> Icons.Filled.CheckCircle
-                    ItemState.SKIPPED -> Icons.Filled.FastForward
-                    ItemState.NOT_DONE -> Icons.Filled.RadioButtonUnchecked
-                },
-                contentDescription = when (itemState) {
-                    ItemState.DONE -> "Done"
-                    ItemState.SKIPPED -> "Skipped"
-                    ItemState.NOT_DONE -> "Not done"
-                },
-                // Done is accented; skipped is muted, so a skipped item reads as
-                // settled without claiming to be an achievement.
-                tint = when (itemState) {
-                    ItemState.DONE -> MaterialTheme.colorScheme.primary
-                    ItemState.SKIPPED -> MaterialTheme.colorScheme.onSurfaceVariant
-                    ItemState.NOT_DONE -> MaterialTheme.colorScheme.onSurfaceVariant
-                },
-                modifier = Modifier.padding(end = 16.dp),
-            )
+            ItemStateIcon(itemState, Modifier.padding(end = 16.dp))
             Column(Modifier.weight(1f)) {
                 Text(
                     node.title,
