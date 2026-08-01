@@ -19,8 +19,24 @@ import androidx.compose.ui.platform.LocalView
  */
 class Haptics(private val view: View) {
 
-    /** A light tick for a tap that navigates or commits something. */
-    fun tap() = perform(HapticFeedbackConstants.CONTEXT_CLICK)
+    // Roughly, the platform maps these to three intensities:
+    //   CONTEXT_CLICK / CLOCK_TICK -> a faint tick
+    //   VIRTUAL_KEY / KEYBOARD_TAP -> a normal click, as used for button presses
+    //   LONG_PRESS                 -> a heavy click
+    // If a sensation below needs more or less weight, move it a rung.
+
+    /**
+     * A tap that navigates or commits something. Uses the normal button-press
+     * click rather than the faint tick, which was too easy to miss.
+     */
+    fun tap() = perform(HapticFeedbackConstants.VIRTUAL_KEY)
+
+    /**
+     * One notch of a continuous gesture — an item passing its neighbour while
+     * being dragged, or a swipe crossing the point where releasing would act.
+     * Deliberately the faintest effect available, since it repeats.
+     */
+    fun step() = perform(HapticFeedbackConstants.CLOCK_TICK)
 
     /**
      * The moment a dragged item is picked up. Uses the platform's gesture-start
@@ -41,6 +57,27 @@ class Haptics(private val view: View) {
             HapticFeedbackConstants.GESTURE_END
         } else {
             HapticFeedbackConstants.CONTEXT_CLICK
+        }
+    )
+
+    /**
+     * An action going through: a confirmation accepted, or a mode entered. Weighty
+     * enough to distinguish committing from merely tapping.
+     */
+    fun confirm() = perform(
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            HapticFeedbackConstants.CONFIRM
+        } else {
+            HapticFeedbackConstants.LONG_PRESS
+        }
+    )
+
+    /** Work being thrown away — discarding a draft, or a refusal. */
+    fun reject() = perform(
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            HapticFeedbackConstants.REJECT
+        } else {
+            HapticFeedbackConstants.LONG_PRESS
         }
     )
 

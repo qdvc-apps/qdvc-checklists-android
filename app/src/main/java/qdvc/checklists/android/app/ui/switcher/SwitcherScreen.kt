@@ -102,6 +102,14 @@ private fun SwitcherRow(
     var offset by remember { mutableStateOf(0f) }
     val animated by animateFloatAsState(targetValue = offset, label = "swipe")
 
+    val haptics = rememberHaptics()
+    // The row doesn't latch open: releasing past this point closes it, releasing
+    // before it springs back. So the useful moment to signal is crossing the
+    // point of no return, in either direction — that's what makes the gesture
+    // predictable instead of a guess.
+    val commitAt = -revealPx / 2
+    var pastCommit by remember { mutableStateOf(false) }
+
     Box(Modifier.fillMaxWidth()) {
         // Close action behind the row.
         Box(
@@ -137,12 +145,24 @@ private fun SwitcherRow(
                 .pointerInput(item) {
                     detectHorizontalDragGestures(
                         onDragEnd = {
-                            offset = if (offset < -revealPx / 2) {
-                                onClose(); 0f
-                            } else 0f
+                            if (offset < commitAt) {
+                                haptics.confirm()
+                                onClose()
+                            }
+                            offset = 0f
+                            pastCommit = false
+                        },
+                        onDragCancel = {
+                            offset = 0f
+                            pastCommit = false
                         },
                         onHorizontalDrag = { _, dragAmount ->
                             offset = (offset + dragAmount).coerceIn(-revealPx, 0f)
+                            val nowPast = offset < commitAt
+                            if (nowPast != pastCommit) {
+                                pastCommit = nowPast
+                                haptics.step()
+                            }
                         },
                     )
                 }

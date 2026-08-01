@@ -92,7 +92,7 @@ fun InfoScreen(
                             ) {
                                 DropdownMenuItem(
                                     text = { Text("Mark as skipped") },
-                                    onClick = { menuOpen = false; onSkip() },
+                                    onClick = { menuOpen = false; haptics.tap(); onSkip() },
                                     leadingIcon = {
                                         Icon(
                                             Icons.Filled.FastForward,

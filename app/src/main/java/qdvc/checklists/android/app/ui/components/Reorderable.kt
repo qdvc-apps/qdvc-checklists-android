@@ -27,6 +27,7 @@ class ReorderState(
     private val onMove: (from: Int, to: Int) -> Unit,
     private val onPickUp: () -> Unit = {},
     private val onDrop: () -> Unit = {},
+    private val onStep: () -> Unit = {},
 ) {
     /** Index of the row under the finger, or null when nothing is being dragged. */
     var draggingIndex by mutableStateOf<Int?>(null)
@@ -59,6 +60,9 @@ class ReorderState(
         if (target != null) {
             onMove(from, target.index)
             draggingIndex = target.index
+            // One notch per neighbour passed; crossing a row boundary is what
+            // rate-limits this, so it can't buzz continuously.
+            onStep()
             // The row now occupies the target's slot, so reduce the visual offset
             // by the gap between the two slots to keep it under the finger.
             dragOffset -= (target.offset - current.offset).toFloat()
@@ -111,6 +115,7 @@ fun rememberReorderState(
             onMove = { from, to -> handler.value(from, to) },
             onPickUp = haptics::pickUp,
             onDrop = haptics::drop,
+            onStep = haptics::step,
         )
     }
 }

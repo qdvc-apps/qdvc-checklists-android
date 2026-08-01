@@ -142,8 +142,12 @@ fun ChecklistScreen(
                 title = { Text(checklist.cid) },
                 actions = {
                     if (rearranging) {
-                        TextButton(onClick = onAskCancelRearrange) { Text("Cancel") }
-                        TextButton(onClick = onAskSaveRearrange) { Text("Save") }
+                        TextButton(
+                            onClick = { haptics.tap(); onAskCancelRearrange() }
+                        ) { Text("Cancel") }
+                        TextButton(
+                            onClick = { haptics.tap(); onAskSaveRearrange() }
+                        ) { Text("Save") }
                     } else {
                         IconButton(onClick = { menuOpen = true }) {
                             Icon(Icons.Filled.MoreVert, contentDescription = "Menu")
@@ -161,7 +165,13 @@ fun ChecklistScreen(
                             )
                             DropdownMenuItem(
                                 text = { Text("Rearrange items") },
-                                onClick = { menuOpen = false; onStartRearrange() },
+                                onClick = {
+                                    menuOpen = false
+                                    // A mode change, not just a tap: the tab bar
+                                    // slides away, so it should be felt.
+                                    haptics.confirm()
+                                    onStartRearrange()
+                                },
                                 leadingIcon = {
                                     Icon(Icons.Filled.SwapVert, contentDescription = null)
                                 },
@@ -240,7 +250,9 @@ fun ChecklistScreen(
             title = { Text("Discard new order?") },
             text = { Text("The items will go back to the order they had before.") },
             confirmButton = {
-                TextButton(onClick = onConfirmCancelRearrange) { Text("Discard") }
+                TextButton(
+                    onClick = { haptics.reject(); onConfirmCancelRearrange() }
+                ) { Text("Discard") }
             },
             dismissButton = {
                 TextButton(onClick = onDismissRearrangePrompt) { Text("Keep rearranging") }
@@ -257,7 +269,10 @@ fun ChecklistScreen(
             },
             confirmButton = {
                 TextButton(
-                    onClick = { onConfirmSaveRearrange(draft.map { it.folderName }) }
+                    onClick = {
+                        haptics.confirm()
+                        onConfirmSaveRearrange(draft.map { it.folderName })
+                    }
                 ) { Text("Save order") }
             },
             dismissButton = {
@@ -278,9 +293,9 @@ fun ChecklistScreen(
                 )
             },
             confirmButton = {
-                TextButton(onClick = { onMarkAllNotDone(); confirmBulk = false }) {
-                    Text("Mark all not done")
-                }
+                TextButton(
+                    onClick = { haptics.confirm(); onMarkAllNotDone(); confirmBulk = false }
+                ) { Text("Mark all not done") }
             },
             dismissButton = {
                 TextButton(onClick = { confirmBulk = false }) { Text("Cancel") }
