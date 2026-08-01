@@ -65,7 +65,12 @@ data class ChecklistFts(
 @Entity(
     tableName = "nodes",
     primaryKeys = ["workspaceUri", "docId"],
-    indices = [androidx.room.Index(value = ["workspaceUri", "checklistDocId"])]
+    indices = [
+        androidx.room.Index(value = ["workspaceUri", "checklistDocId"]),
+        // Done-state rows are keyed by folder name, so joining them to nodes
+        // needs this rather than a scan.
+        androidx.room.Index(value = ["workspaceUri", "checklistFolder", "folderName"]),
+    ]
 )
 data class NodeEntity(
     val workspaceUri: String,
@@ -154,9 +159,13 @@ data class LogLine(val timestamp: String, val action: String)
 data class ChecklistIdentity(val docId: String, val cid: String, val title: String)
 
 /**
- * When any item in a checklist was last marked done or skipped. Derived from the
- * logged events, so unmarking an item afterwards does not erase the fact that it
- * was worked on.
+ * The most recent date shown against any *currently* done or skipped item in a
+ * checklist — that is, the newest of the dates the checklist tab would display.
+ *
+ * Derived from resolved state rather than from logged events, so an item that was
+ * marked and then unmarked stops counting. Otherwise Home could report a
+ * checklist as updated today while the checklist itself shows no such date,
+ * which reads as a contradiction.
  */
 data class ChecklistActivity(val checklistFolder: String, val latest: String)
 
@@ -229,17 +238,29 @@ abstract class IndexDao {
     abstract suspend fun identities(ws: String): List<ChecklistIdentity>
 
     /**
-     * Latest mark per checklist. [actions] is passed in rather than written into
-     * the SQL so the wire strings stay owned by `ActionType`.
+     * Latest date against a currently-resolved item, per checklist.
+     *
+     * Joined to `nodes` so a state row whose item no longer exists — left behind
+     * when something is deleted outside the app — cannot contribute a date the
+     * checklist tab would never show. Restricted to items for the same reason: a
+     * heading displays no state, so a stray mark on one must not count either.
+     *
+     * [states] and [itemKind] are parameters rather than SQL literals so the wire
+     * strings stay owned by `ItemState` and `NodeKind`.
      */
     @Query(
-        "SELECT checklistFolder AS checklistFolder, MAX(timestamp) AS latest " +
-            "FROM log_entries WHERE workspaceUri = :ws AND itemFolder != '' " +
-            "AND action IN (:actions) GROUP BY checklistFolder"
+        "SELECT d.checklistFolder AS checklistFolder, MAX(d.markedAt) AS latest " +
+            "FROM done_state AS d " +
+            "JOIN nodes AS n ON n.workspaceUri = d.workspaceUri " +
+            "AND n.checklistFolder = d.checklistFolder AND n.folderName = d.itemFolder " +
+            "WHERE d.workspaceUri = :ws AND d.state IN (:states) " +
+            "AND d.markedAt IS NOT NULL AND n.kind = :itemKind " +
+            "GROUP BY d.checklistFolder"
     )
     abstract fun observeChecklistActivity(
         ws: String,
-        actions: List<String>,
+        states: List<String>,
+        itemKind: String,
     ): Flow<List<ChecklistActivity>>
 
     @Query("SELECT * FROM checklists WHERE workspaceUri = :ws AND docId = :docId LIMIT 1")
@@ -386,7 +407,7 @@ abstract class IndexDao {
         LogEntryEntity::class,
         IndexMeta::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class IndexDatabase : RoomDatabase() {

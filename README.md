@@ -59,10 +59,12 @@ checklists, headings, and items. Completion state and an audit trail live in a
 1. **Home** — workspaces, then straight into that workspace's checklists. Each
    checklist's second line gives its ID and when it was last worked on:
    `BCL091 · upd. today`, `BCL091 · upd. 3 Jul 2026`, or `BCL091 · upd. never`.
-   That comes from the logged `marked_done` and `marked_skipped` events, so
-   unmarking an item afterwards doesn't erase the fact that it was worked on, and
-   `marked_not_done` never counts. The workspaces toolbar menu holds Settings; the
-   checklists toolbar menu holds Search, Index status, and New checklist.
+   That date is the newest of the dates the Checklist tab itself would show — the
+   latest mark against an item that is *currently* done or skipped. An item marked
+   and then unmarked contributes nothing, so Home can never claim a checklist was
+   updated today while the checklist shows no such date. The workspaces toolbar
+   menu holds Settings; the checklists toolbar menu holds Search, Index status,
+   and New checklist.
 2. **Checklist** — toolbar title is the checklist ID; the info zone shows the
    name, description, progress, and bulk-clear, above the tickable list. The
    toolbar menu edits the checklist, adds an item/heading, or rearranges. Tapping

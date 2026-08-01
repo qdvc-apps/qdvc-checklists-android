@@ -155,7 +155,7 @@ class WorkspaceStore(
         val ws = treeUri.toString()
         return combine(
             dao.observeChecklists(ws),
-            dao.observeChecklistActivity(ws, MARK_ACTIONS),
+            dao.observeChecklistActivity(ws, RESOLVED_STATES, NodeKind.ITEM.wire),
         ) { checklists, activity ->
             val latestByFolder = activity.associate { it.checklistFolder to it.latest }
             checklists.map { c ->
@@ -547,12 +547,12 @@ class WorkspaceStore(
         private const val INSERT_CHUNK = 500
 
         /**
-         * The actions that count as working on a checklist. Unmarking is not one:
-         * it undoes a state, but it doesn't undo having been there.
+         * The states that count as settled. An item unmarked back to not-done has
+         * no date to show, so it contributes nothing.
          */
-        private val MARK_ACTIONS = listOf(
-            ActionType.MARKED_DONE.label,
-            ActionType.MARKED_SKIPPED.label,
+        private val RESOLVED_STATES = listOf(
+            ItemState.DONE.wire,
+            ItemState.SKIPPED.wire,
         )
 
         /**

@@ -455,3 +455,69 @@ class DateOnlyTest {
         assertEquals("garbage", DateFormatting.humanDateOnly("garbage", now))
     }
 }
+
+/**
+ * The mechanism Home's date relies on: only a currently-resolved item carries a
+ * markedAt, so an item marked and then unmarked cannot contribute a date.
+ */
+class ResolvedStateDatesTest {
+
+    private fun row(ts: String, action: String, item: String, checklist: String = "C1") =
+        ItemRepository.RawLogRow(ts, action, "android-app", checklist, item)
+
+    /** Dates Home would consider: markedAt of rows resolving to done or skipped. */
+    private fun candidateDates(rows: List<ItemRepository.RawLogRow>): List<String> =
+        WorkspaceStore.foldDoneStates("ws", rows)
+            .filter { it.state == ItemState.DONE.wire || it.state == ItemState.SKIPPED.wire }
+            .mapNotNull { it.markedAt }
+
+    @Test
+    fun aDoneItemOffersItsDate() {
+        assertEquals(listOf("T1"), candidateDates(listOf(row("T1", "marked_done", "01-a"))))
+    }
+
+    @Test
+    fun aSkippedItemOffersItsDate() {
+        assertEquals(listOf("T1"), candidateDates(listOf(row("T1", "marked_skipped", "01-a"))))
+    }
+
+    @Test
+    fun anItemMarkedThenUnmarkedOffersNothing() {
+        // The case that distinguishes resolved state from logged events: a
+        // marked_done event exists, but the item is not done now.
+        val rows = listOf(row("T1", "marked_done", "01-a"), row("T2", "marked_not_done", "01-a"))
+        assertEquals(emptyList<String>(), candidateDates(rows))
+    }
+
+    @Test
+    fun aBulkClearedItemOffersNothing() {
+        val rows = listOf(
+            row("T1", "marked_skipped", "01-a"),
+            row("T2", "marked_not_done_bulk", "01-a"),
+        )
+        assertEquals(emptyList<String>(), candidateDates(rows))
+    }
+
+    @Test
+    fun onlyTheSurvivingItemsCountTowardsTheLatestDate() {
+        // 01-a was worked on most recently but then unmarked; 02-b is still done,
+        // so the checklist's date must be 02-b's, not 01-a's.
+        val rows = listOf(
+            row("T1", "marked_done", "02-b"),
+            row("T2", "marked_done", "01-a"),
+            row("T3", "marked_not_done", "01-a"),
+        )
+        assertEquals(listOf("T1"), candidateDates(rows))
+        assertEquals("T1", candidateDates(rows).max())
+    }
+
+    @Test
+    fun reMarkingAfterUnmarkingCountsAgain() {
+        val rows = listOf(
+            row("T1", "marked_done", "01-a"),
+            row("T2", "marked_not_done", "01-a"),
+            row("T3", "marked_skipped", "01-a"),
+        )
+        assertEquals(listOf("T3"), candidateDates(rows))
+    }
+}
